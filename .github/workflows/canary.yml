@@ -1,0 +1,66 @@
+name: ghcr canary
+
+# Diagnostic only: determines whether GITHUB_TOKEN can write to
+# ghcr.io/<owner>/<repo> (which already exists as a package from an earlier
+# project) versus a fresh package name. Deleted once the answer is known.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build tiny probe image
+        run: |
+          mkdir -p /tmp/ctx
+          printf 'FROM busybox:latest\nLABEL canary=1\n' > /tmp/ctx/Dockerfile
+          docker buildx build --load -t probe /tmp/ctx
+
+      - name: "A: push to the EXISTING package name"
+        continue-on-error: true
+        id: known
+        run: |
+          docker tag probe ghcr.io/${{ github.repository }}:ci-canary
+          docker push ghcr.io/${{ github.repository }}:ci-canary
+
+      - name: "B: push to a FRESH package name"
+        continue-on-error: true
+        id: fresh
+        run: |
+          docker tag probe ghcr.io/${{ github.repository_owner }}/dsh-ci-probe:canary
+          docker push ghcr.io/${{ github.repository_owner }}/dsh-ci-probe:canary
+
+      - name: Verdict
+        run: |
+          echo "existing package name: ${{ steps.known.outcome }}"
+          echo "fresh package name:    ${{ steps.fresh.outcome }}"
+          if [ "${{ steps.known.outcome }}" = "success" ]; then
+            echo "CONCLUSION: no collision; the name is writable"
+          elif [ "${{ steps.fresh.outcome }}" = "success" ]; then
+            echo "CONCLUSION: collision confirmed - existing name is owned by another repo"
+          else
+            echo "CONCLUSION: both denied - repository-level package permission problem"
+          fi
+
+      # Leave nothing behind.
+      - name: Clean up any tags this run created
+        if: always()
+        continue-on-error: true
+        run: |
+          gh api --method DELETE "/user/packages/container/${{ github.event.repository.name }}/versions/ci-canary" 2>/dev/null || true
+          gh api --method DELETE "/user/packages/container/dsh-ci-probe" 2>/dev/null || true
+          echo "cleanup attempted"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
