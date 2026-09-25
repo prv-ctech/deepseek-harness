@@ -25,8 +25,14 @@ needs_chown() {
 }
 
 # Build the arguments for a default `dsh web` launch, then append the caller's.
-# Order matters: Unraid replaces CMD, so a bare flag list must still land after
-# the `web` subcommand.
+# Order matters twice over:
+#   * Unraid replaces CMD, so a bare flag list must still land after `web`.
+#   * `--patch` and `--no-open` are parsed by different parsers. `--patch`
+#     belongs to the launcher and must precede the first app-owned flag, while
+#     `--no-open` and `--trusted-host` belong to the app and must follow it.
+#     Supplying a flag the caller already passed would put a launcher flag after
+#     an app flag, and dsh then rejects it with `unknown option '--patch'` — so
+#     the caller's own flags win and ours are only injected when absent.
 if [ "$#" -eq 0 ]; then
   set -- web
 fi
@@ -36,7 +42,19 @@ esac
 
 if [ "$1" = "web" ]; then
   shift
-  set -- web --patch "$PATCH" --no-open "$@"
+  patch_seen=0
+  no_open_seen=0
+  for argument in "$@"; do
+    [ "$argument" = "--patch" ] && patch_seen=1
+    [ "$argument" = "--no-open" ] && no_open_seen=1
+  done
+
+  if [ "$patch_seen" = 1 ]; then
+    set -- web "$@"
+  else
+    set -- web --patch "$PATCH" "$@"
+  fi
+  [ "$no_open_seen" = 1 ] || set -- "$@" --no-open
   if [ -n "$PUBLIC_HOST" ]; then
     set -- "$@" --trusted-host "$PUBLIC_HOST"
   fi
