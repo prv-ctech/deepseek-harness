@@ -258,3 +258,42 @@ the original plan:
 - Also verified: the entrypoint needs `setpriv --clear-groups`, not
   `--init-groups` (the latter rejects a uid with no passwd entry, e.g. Unraid's
   `99:100`), and dsh runs fine as such a uid given `HOME`/`SHELL`/`DSH_HOME`.
+
+### 7.1 Unraid distribution and CI release tracking
+
+`unraid/deepseek-harness.xml` is our own template: the `templates-user` XML
+convention as a format reference, every value ours. Verified by starting a real
+container with exactly the template's defaults (`PUID=99`, `PGID=100`, no
+`DSH_PUBLIC_HOST`): appdata and workspace ended up owned `99:100`, health
+`healthy`, browsing by container IP passed the `/api` fence (401 = trusted,
+awaiting cookie) while an undeclared hostname got 403. The full login flow was
+then exercised inside the container — `/?token=…` → 303 + cookie,
+`settings/describe` → 200 with `writable:true`, index → 200 containing
+`__DSH_TRANSPORT__ {ownsHost:true}`.
+
+Two bugs surfaced while building it, both invisible until a real Unraid-style
+invocation was tried:
+
+- **Caller-supplied web flags were rejected.** The entrypoint unconditionally
+  injected `--patch`/`--no-open`, so Post Arguments holding
+  `web --patch … --no-open` (the pattern the reference repo documents) produced
+  `error: unknown option '--patch'` and the container exited. Cause: `--patch`
+  is launcher-owned and must precede the first app-owned flag, whereas
+  `--no-open` and `--trusted-host` are app-owned. The entrypoint now lets the
+  caller's flags win and injects only what is absent; four call styles verified
+  (no args, bare flags, mward4-style PostArgs, `web --no-open`).
+- **`scripts/published-recipe.sh` could not read a private package.** It
+  presented a GitHub token as a raw registry Bearer, which ghcr answers with
+  403; the token must be exchanged at the token endpoint via Basic auth
+  (verified: raw → 403, exchanged → 200). Unfixed, the plan job would have read
+  every published tag as missing and rebuilt all of them every six hours. An
+  unbound `$token` under `set -u` on the plain-HTTP path was fixed with it.
+
+**CI package-name collision.** Pushing to `ghcr.io/prv-ctech/deepseek-harness`
+was denied with `permission_denied: write_package` while a fresh package name
+succeeded from the same run, so it is a package-ownership collision rather than
+a workflow bug: that package already exists (holding a 3.67GB image built by a
+different project from `@deepseek-ai/dsh@0.1.6-alpha.1`, mislabelled with this
+repository's URL), and GHCR binds a package to the repository that first
+published it. Resolution is deleting that stale package in the GitHub UI; no
+workflow change is needed.

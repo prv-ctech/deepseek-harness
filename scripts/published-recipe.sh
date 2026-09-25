@@ -8,28 +8,42 @@
 # imagetools`: the labels live in the config blob, so this needs nothing beyond
 # curl and jq, and it can be exercised against any local registry.
 #
-# usage: published-recipe.sh <registry> <repository> <tag> [bearer-token]
+# usage: published-recipe.sh <registry> <repository> <tag> [github-token]
 # env:   REGISTRY_SCHEME  http for a plain-HTTP registry (default https)
+#
+# The optional credential is a GitHub token (GITHUB_TOKEN or a PAT), used to
+# exchange for a registry token when the package is private. Omit it for public
+# packages. A registry bearer token is not accepted here — pass none, or the
+# token endpoint's Basic auth would reject it.
 set -eu
 
 registry="$1"
 repository="$2"
 tag="$3"
-token="${4:-}"
+credential="${4:-}"
 scheme="${REGISTRY_SCHEME:-https}"
 
 # Both media-type families are offered: a registry storing OCI manifests
 # answers 404 when only the Docker type is requested.
 accept='application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json'
 
-# Anonymous pull works for public packages; private ones need a token, which a
-# caller that already holds one passes in.
-if [ -z "$token" ] && [ "$scheme" = "https" ]; then
-  token=$(curl -fsSL "https://${registry}/token?scope=repository:${repository}:pull" 2>/dev/null \
-    | jq -r '.token // empty' || true)
+# A GitHub token (GITHUB_TOKEN or a PAT) is NOT itself a registry bearer token:
+# presenting one raw makes ghcr answer 403. It has to be exchanged at the token
+# endpoint, which wants it as the Basic-auth password. With no credential at
+# all, the same endpoint still hands out an anonymous token, which is all a
+# public package needs.
+if [ "$scheme" = "https" ]; then
+  if [ -n "${credential:-}" ]; then
+    token=$(curl -fsSL -u "x-access-token:${credential}" \
+      "https://${registry}/token?scope=repository:${repository}:pull" 2>/dev/null \
+      | jq -r '.token // empty' || true)
+  else
+    token=$(curl -fsSL "https://${registry}/token?scope=repository:${repository}:pull" 2>/dev/null \
+      | jq -r '.token // empty' || true)
+  fi
 fi
 
-if [ -n "$token" ]; then
+if [ -n "${token:-}" ]; then
   set -- -H "Authorization: Bearer ${token}"
 else
   set --

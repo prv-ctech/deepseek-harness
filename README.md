@@ -129,10 +129,13 @@ docker run -d --user 1000:1000 -p 3080:3080 \
 With `--user` the entrypoint skips chowning and, if the state volume is
 unwritable, prints the exact host-side `chown` instead of a stack trace.
 
-**Unraid** — set `PUID`/`PGID` to your share owner. Unraid's *Post Arguments*
-field replaces the image's `CMD`, so the entrypoint re-adds the patch layer
-itself; a bare `--port 3080 --no-open` still resolves to a working
-`dsh web --patch … --no-open --port 3080`.
+**Unraid** — use `unraid/deepseek-harness.xml` (Docker tab → Add Container →
+paste, or drop it in `/boot/config/plugins/dockerMan/templates-user/`). It sets
+`PUID=99`/`PGID=100` to match Unraid's usual `nobody:users` share ownership, and
+leaves *Post Arguments* as a bare `web`. The entrypoint injects the patch layer
+itself, and caller-supplied flags win, so the mward4-style
+`web --patch … --no-open` still works if you paste it. Browsing by IP needs no
+configuration; a hostname goes in *DSH Public Host*.
 
 **Choosing the numbers**: `PUID`/`PGID` may be any uid/gid, including ones with
 no passwd entry (Unraid's `99:100`). The entrypoint uses

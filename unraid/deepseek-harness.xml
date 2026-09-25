@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>deepseek-harness</Name>
+  <Repository>ghcr.io/prv-ctech/deepseek-harness:latest</Repository>
+  <Registry>https://github.com/prv-ctech/deepseek-harness/pkgs/container/deepseek-harness</Registry>
+  <Network>bridge</Network>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Project>https://github.com/prv-ctech/deepseek-harness</Project>
+  <Support>https://github.com/prv-ctech/deepseek-harness/issues</Support>
+  <Overview>
+DeepSeek Harness (dsh) - browser-based agent runtime from DeepSeek AI, packaged from the official npm release. Official upstream code, unmodified: the container only adds a config layer and one small plugin on top of the published package, so a new upstream release is a rebuild rather than a fork.
+
+NO FIRST-RUN SETUP. The container takes ownership of its own appdata at startup, then drops to PUID:PGID before dsh runs. Defaults PUID=99 and PGID=100 match Unraid's usual nobody:users ownership, so a freshly created appdata directory works with no chown from a terminal.
+
+GETTING THE LOGIN URL: dsh requires a launch token and prints the URL to open in its log:
+[br]  docker logs deepseek-harness[br]
+Look for the line starting "dsh web (proxy):" or "dsh web:". Open that URL once; it exchanges the token for a cookie valid for 30 days. THE TOKEN ROTATES ON EVERY RESTART, so after a container update or restart, re-read the log. Seeing "authentication required" or HTTP 401 means exactly that - it is not a misconfiguration.
+
+BROWSING BY IP OR BY NAME: dsh accepts a request only if the hostname in the address bar is trusted - otherwise the API answers HTTP 403. Non-internal IPv4 addresses are trusted automatically, so http://[IP]:[PORT:3080] works with no configuration. A HOSTNAME (e.g. unraid.local or a domain behind a reverse proxy) must be declared: put it in DSH PUBLIC HOST below, or add it to EXTRA TRUSTED HOSTS to keep several working at once. This is upstream's DNS-rebinding and CSRF protection, and it is what stops a malicious page on your LAN from reaching the API.
+
+TLS AND THE INTERNET: dsh serves plain HTTP and sends no security headers. Unraid's own WebUI link is therefore http only. Do not port-forward this container directly. For remote access put an HTTPS reverse proxy in front (Pangolin, Traefik, Caddy, Cloudflare Tunnel...) that preserves the inbound Host header, add that hostname to DSH PUBLIC HOST, and have the proxy add HSTS and the usual security headers. In this image the Settings, Models and Credentials pages work through such a proxy; there is no need for an SSH tunnel.
+
+SANDBOX: dsh runs untrusted commands confined to the Workspace path. The confinement uses Landlock, which is unprivileged and needs no extra capabilities, and if the kernel cannot enforce it dsh refuses to run rather than silently continuing unprotected. Keep the sandbox on unless your kernel lacks Landlock; the escape hatch is DSH_PERMISSION_MODE=danger-full-access, which lets the agent run commands with full access to this container's filesystem.
+
+WHAT THE AGENT CAN REACH: the Workspace mount, and anything else you mount into it. Only mount data you are willing to let an AI read and modify.
+
+VERSIONS: :latest follows the newest upstream release candidate. Every upstream version also gets its own tag (e.g. 0.1.7-rc.2) which you can pin in Repository instead. dsh is a developer preview with breaking changes between releases - 0.1.7 migrated session logs to a format that cannot be downgraded - so consider LEAVING AUTO-UPDATE OFF, backing up appdata first, and reading the release notes before updating.
+
+UPGRADING FROM ANOTHER IMAGE: point this template at a fresh appdata path first. The container entrypoint must own the state directory, and session logs from a 0.1.5 or older deployment are upgraded irreversibly on first start of 0.1.7.
+  </Overview>
+  <Category>AI: Tools:</Category>
+  <WebUI>http://[IP]:[PORT:3080]</WebUI>
+  <TemplateURL/>
+  <Icon>https://raw.githubusercontent.com/deepseek-ai/deepseek-harness/dsh-v0.1.7-rc.2/apps/desktop/resources/icon.png</Icon>
+  <ExtraParams/>
+  <PostArgs>web</PostArgs>
+  <Config Name="WebUI Port" Target="3080" Default="3080" Mode="tcp" Description="The dsh web interface. Reachable by anything that can route to this Unraid box, so treat the port as trusted-LAN only. Change the host port only if 3080 is taken." Type="Port" Display="always" Required="true" Mask="false">3080</Config>
+  <Config Name="Appdata" Target="/home/node/.dsh" Default="/mnt/user/appdata/deepseek-harness" Mode="rw" Description="Persistent dsh state: settings, API credentials, sessions, plugin installs. Ownership is adjusted automatically at startup, so no chown is needed. Back this up before every update." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/deepseek-harness</Config>
+  <Config Name="Workspace" Target="/workspace" Mode="rw" Default="/mnt/user/appdata/deepseek-harness/workspace" Description="The directory the agent works in and the only place the sandbox lets it write. Point it at your projects if you prefer, but only mount data you are willing to let an AI modify. Existing files keep their ownership; the mount point itself is made writable." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/deepseek-harness/workspace</Config>
+  <Config Name="DSH Public Host" Target="DSH_PUBLIC_HOST" Default="" Description="Optional. The exact hostname you type in the browser, if you use one (e.g. unraid.local, or your domain behind a reverse proxy). No http://, no port unless it is non-standard. Without it, browsing by IP still works but a hostname gives HTTP 403. Added to the app as --trusted-host, and used for the login URL printed in the log." Type="Variable" Display="always" Required="false" Mask="false"></Config>
+  <Config Name="Extra Trusted Hosts" Target="DSH_TRUSTED_HOSTS" Default="" Description="Optional. More hostnames to accept, comma-separated, when you reach this container by several names (e.g. unraid.local,192.168.1.10:3080). Each becomes its own --trusted-host. Non-internal IP addresses need no entry here." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="DeepSeek API Key" Target="DEEPSEEK_API_KEY" Default="" Description="Optional. Your DeepSeek API key (sk-...). dsh reads it from the environment, so setting it here signs you in on first start; you can also add it later in the Models page instead, which stores it in appdata rather than in this container's configuration." Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <Config Name="PUID" Target="PUID" Default="99" Description="User id dsh runs as, and the owner applied to Appdata at startup. 99 is Unraid's nobody, which is what your other appdata directories use. Set 1000 if you keep appdata owned by a normal user instead." Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Description="Group id dsh runs as. 100 is Unraid's users group. Pair with PUID: use 99:100 for nobody:users appdata, or 1000:1000 for a normal user." Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+  <Config Name="Sandbox Mode" Target="DSH_PERMISSION_MODE" Default="workspace-write" Description="workspace-write (default) confines the agent to the Workspace path. read-only forbids writes there too. danger-full-access disables the sandbox entirely, giving the agent full access to this container's filesystem - only use it if your kernel cannot enforce Landlock and dsh refuses to start." Type="Variable" Display="advanced" Required="false" Mask="false">workspace-write</Config>
+</Container>
