@@ -225,6 +225,41 @@ Design decisions:
 - Healthcheck reports healthy; `docker stop` exits cleanly within the drain
   budget.
 
+All six were exercised; the results, in order:
+
+| # | Check | Result |
+|---|---|---|
+| 1 | `docker run` boots and logs the token URL | pass (`dsh web: …/?token=…`) |
+| 2 | Fence: `/` 401, `/?token=…` 303 + cookie, `settings/describe` 200 `writable:true`, untrusted Host 403 | pass |
+| 3 | Index carries `__DSH_TRANSPORT__ {ownsHost:true}` | pass (34372-byte index) |
+| 4 | Confined command runs; outside writes denied | pass — see below |
+| 5 | Healthcheck healthy | pass |
+| 6 | `docker stop` exits cleanly | pass (exit 0, immediate, no SIGKILL) |
+
+Check 4 detail, run inside the hardened container (`--read-only`, `--cap-drop
+ALL` + five re-added caps, `no-new-privileges`, `noexec /tmp`) as the
+unprivileged dsh uid via the real launcher API
+(`launcherPath`/`grantArgs`), i.e. the same path dsh uses:
+`probe()` → **`full`** (the authoritative availability signal, not a
+`--version` check); write inside `/workspace` → **succeeds**; write to `/etc`,
+`/root` and the state dir `/home/node/.dsh` → **denied** with
+`Read-only file system` / `Permission denied`; reading `/etc/passwd` still
+allowed.
+
+Two caveats worth recording, both upstream facts rather than defects in this
+distribution:
+
+- **Landlock is filesystem-only.** `landlockProfileArgs`
+  (`dsh-sandbox-local/lib/index.js:45-53`) grants `readOnly: ["/"]` plus
+  `readWrite: ["/dev/null", "/tmp", workspaceRoot]` and nothing else — there is
+  no network rule, and an outbound `fetch` from inside the confinement
+  succeeded. The sandbox bounds file effects, not egress.
+- **`--read-only` alone is not a confinement test.** The first attempt showed
+  the workspace write failing, which looked like over-restriction; it was the
+  test's own fault — no workspace volume was mounted, so `/workspace` was the
+  image's read-only directory. A workspace mount is required for
+  `workspace-write` to mean anything.
+
 ## 6. Decisions taken (answers to the original open questions)
 
 1. **Topology** — Pangolin runs on an external VPS; `newt` sits on the private
