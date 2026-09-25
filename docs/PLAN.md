@@ -339,11 +339,16 @@ workflow dispatch ([run 36106183963](https://github.com/prv-ctech/deepseek-harne
 still failed at the push with the same error. A fresh GHCR manifest request
 still served the old `:latest` digest
 `sha256:9f8f4b442f32c60a5f64fa1e5a2a1674fec71dc24c3b85c1fdb7c1bd3a7f6430`;
-`0.1.7-rc.2` was absent. Package deletion or repository access is therefore
-not yet verified. The available CLI token lacks `read:packages`, so package
-settings cannot be inspected through the API. Do not describe CI or the
-published image as working until a run pushes, smoke-tests, and retags
-`:latest` successfully.
+`0.1.7-rc.2` was absent at that time. The deletion later propagated: a second
+dispatch ([run 36106958983](https://github.com/prv-ctech/deepseek-harness/actions/runs/36106958983))
+passed planning, pushed `0.1.7-rc.2`, pulled it for the container smoke test
+(healthy, DSH UID 1000, index 401 without login), and copied its manifest to
+`:latest`. The new package is private (anonymous GHCR pull-token request returned
+401). The operator chose registry login for Unraid rather than public access.
+Pullers need a GitHub personal access token (classic) with `read:packages` and
+account access to the package; credentials stay on the Docker host, outside the
+template. The available CLI token lacks `read:packages`, so this task did not
+independently pull the private image from Unraid.
 
 Local recheck on 2026-09-25: the `0.1.7-rc.2` image built, and all four
 supported entrypoint forms (default, bare app flags, `web --patch … --no-open`,

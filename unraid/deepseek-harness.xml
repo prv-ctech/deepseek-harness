@@ -11,7 +11,9 @@
   <Overview>
 DeepSeek Harness (dsh) - browser-based agent runtime from DeepSeek AI, packaged from the official npm release. Official upstream code, unmodified: the container only adds a config layer and one small plugin on top of the published package, so a new upstream release is a rebuild rather than a fork.
 
-NO FIRST-RUN SETUP. The container takes ownership of its own appdata at startup, then drops to PUID:PGID before dsh runs. Defaults PUID=99 and PGID=100 match Unraid's usual nobody:users ownership, so a freshly created appdata directory works with no chown from a terminal.
+PRIVATE IMAGE: Before installing or updating, open the Unraid terminal and run "docker login ghcr.io -u prv-ctech". At Docker's password prompt, paste a GitHub personal access token (classic) with read:packages and access to this package. Do not put the token in this template or a container variable. See the repository README for details.
+
+After registry login, the container needs no appdata setup. It takes ownership of its own appdata at startup, then drops to PUID:PGID before dsh runs. Defaults PUID=99 and PGID=100 match Unraid's usual nobody:users ownership, so a freshly created appdata directory works with no chown from a terminal.
 
 GETTING THE LOGIN URL: dsh requires a launch token and prints the URL to open in its log:
 [br]  docker logs deepseek-harness[br]

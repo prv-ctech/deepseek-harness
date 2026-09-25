@@ -23,6 +23,22 @@ merge.
 
 ## Quick start
 
+The GHCR image is private. On each Docker host, sign in as a GitHub account with
+access to the package before the first pull or update. Use a personal access
+token (classic) with `read:packages` as the password:
+
+```sh
+docker login ghcr.io -u prv-ctech
+# paste the token at Docker's password prompt
+```
+
+Keep the token on the Docker host; do not put it in `.env`, Compose, or the Unraid
+template. [GitHub's registry guide](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry)
+documents the token scope and login. Docker stores login credentials in its
+[configured credential store](https://docs.docker.com/reference/cli/docker/login/#credential-stores);
+without one, its config file contains base64-encoded credentials. Repeat login
+before an update if that host no longer has the credentials.
+
 `DSH_PUBLIC_HOST` is required — it is the authority your browser uses, and the
 image ships no default so that no deployment inherits someone else's domain:
 
@@ -135,7 +151,8 @@ paste, or drop it in `/boot/config/plugins/dockerMan/templates-user/`). It sets
 leaves *Post Arguments* as a bare `web`. The entrypoint injects the patch layer
 itself, and caller-supplied flags win, so the mward4-style
 `web --patch … --no-open` still works if you paste it. Browsing by IP needs no
-configuration; a hostname goes in *DSH Public Host*.
+configuration; a hostname goes in *DSH Public Host*. Run the GHCR login above in
+Unraid's terminal before installing or updating the container.
 
 **Choosing the numbers**: `PUID`/`PGID` may be any uid/gid, including ones with
 no passwd entry (Unraid's `99:100`). The entrypoint uses
