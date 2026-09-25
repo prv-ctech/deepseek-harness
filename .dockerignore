@@ -1,0 +1,26 @@
+# Never in a build context: docs, history, editor and OS noise.
+.git
+.gitignore
+.github
+docs
+*.md
+!README.md
+
+# Local runtime state — never baked into an image.
+.dsh/
+data/
+state/
+workspace/
+*.log
+
+# Editor/OS junk
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Local deployment values
+.env
+.env.*
+!.env.example

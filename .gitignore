@@ -1,0 +1,19 @@
+# Runtime state, if anyone mounts or runs it in-tree.
+.dsh/
+data/
+state/
+workspace/
+
+# Build artifacts
+*.log
+*.tmp
+
+# Editor/OS junk
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Local deployment values (compose reads this file automatically)
+.env

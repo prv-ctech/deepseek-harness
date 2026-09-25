@@ -1,0 +1,61 @@
+# Reference deployment behind Pangolin (or any reverse proxy that reaches the
+# host by IP:port). `newt` publishes the site to
+# http://<host-ip>:3080, so the port must be reachable on a non-loopback
+# interface — a 127.0.0.1 publish is invisible to it.
+services:
+  deepseek-harness:
+    image: ghcr.io/prv-ctech/deepseek-harness:latest
+    container_name: deepseek-harness
+    restart: unless-stopped
+    # DSH_PUBLIC_HOST must be the authority the browser uses; it is passed to
+    # dsh as --trusted-host, which is what the /api trust fence checks. A
+    # mismatch shows up as HTTP 403 on every API call.
+    #
+    # Deliberately required rather than defaulted: a baked-in default would make
+    # every deployment trust one operator's domain. Put yours in `.env` (compose
+    # reads it automatically; it is gitignored) — see `.env.example`.
+    environment:
+      DSH_PUBLIC_HOST: ${DSH_PUBLIC_HOST:?set DSH_PUBLIC_HOST in .env to the authority browsers use, e.g. dsh.example.com}
+      # Extra authorities accepted by the fence, comma-separated (e.g. the LAN
+      # address you use to reach this box without going through the proxy).
+      DSH_TRUSTED_HOSTS: ${DSH_TRUSTED_HOSTS:-}
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      # Sandbox stays on. Hosts where the kernel cannot enforce it are the
+      # exception, not the rule: the Landlock rung is unprivileged and works in
+      # a default and a hardened container alike, and when no rung works dsh
+      # fails closed instead of silently running unsandboxed. Set this to
+      # danger-full-access only if you accept unsandboxed execution.
+      DSH_PERMISSION_MODE: ${DSH_PERMISSION_MODE:-workspace-write}
+    ports:
+      # Host side defaults to all interfaces so newt/Pangolin can reach it.
+      # Narrow it to a specific LAN address, e.g. 192.168.13.9:3080:3080.
+      - "${DSH_BIND:-0.0.0.0}:${DSH_PORT:-3080}:3080"
+    volumes:
+      - dsh-state:/home/node/.dsh
+      # The agent's sandbox root is process.cwd(); mount the work you want it to
+      # see here. Ownership is handled by the entrypoint (PUID/PGID above).
+      - ${DSH_WORKSPACE:-./workspace}:/workspace
+    # Hardening that is verified to work with this image. `--read-only` is safe
+    # because every writable path lives in the state volume or /tmp; /tmp must
+    # stay exec-capable unless NARB_NATIVE_CACHE_DIR points at a real
+    # filesystem, which the image already does.
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m
+    security_opt:
+      - no-new-privileges:true
+    # The entrypoint starts as root only to take ownership of the mounted
+    # volumes, so it needs exactly these five; everything else is dropped.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    pids_limit: 512
+
+volumes:
+  dsh-state:

@@ -1,0 +1,37 @@
+# Launcher patch layer for containerized `dsh web` (passed via --patch).
+#
+# Upstream's CLI refuses `--host 0.0.0.0` on purpose
+# (packages/bundle/web-app/src/startup.ts: `--host 0.0.0.0 is intentionally not
+# supported yet for safety`), but the webserver plugin's schema accepts exactly
+# '127.0.0.1' | '0.0.0.0'. This file is the supported opt-in. Inside a container
+# an all-interfaces bind is only reachable through ports you publish on the
+# Docker host, which is what makes the reverse proxy (Pangolin/newt) able to
+# reach it — a 127.0.0.1 bind is invisible to it.
+#
+# A patch layer REPLACES the whole config of the row it names (verified: a
+# host-only patch dies with `$.port missing required value`). Overlays are also
+# parsed as literal YAML — `!!js` tags are rejected ("unknown tag !<tag:yaml.org,
+# 2002:js>"), so the bundle's `ctx.webStartup.*` expressions cannot be reused
+# here and every key the row owns is restated below.
+- id: webserver
+  config:
+    host: 0.0.0.0
+    port: 3080
+    compression: gzip
+    compressionLevel: 1
+    compressionThresholdBytes: 1024
+
+# `trustedHosts` is deliberately NOT patched. The public FQDN travels through
+# upstream's own repeatable `--trusted-host` flag (passed by the entrypoint from
+# $DSH_PUBLIC_HOST), which the web-app bundle already feeds into both the
+# `web-runtime` row and the `connection` row
+# (packages/bundle/web-app/cordis.patch.yml: `trustedHosts: !!js
+# ctx.webRuntime.trustedHosts`). LAN IP literals are derived automatically from
+# the all-interfaces bind, so only the external authority needs naming.
+#
+# The plugin makes the remote Settings UI writable and prints the public login
+# URL. Absolute path: the loader rewrites it to `file:///…` beside this patch,
+# so the image needs no package manager to compose it.
+- insert:
+    - id: pangolin-owns-host
+      name: /opt/deepseek-harness/fix/owns-host.mjs
