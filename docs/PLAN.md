@@ -329,6 +329,28 @@ was denied with `permission_denied: write_package` while a fresh package name
 succeeded from the same run, so it is a package-ownership collision rather than
 a workflow bug: that package already exists (holding a 3.67GB image built by a
 different project from `@deepseek-ai/dsh@0.1.6-alpha.1`, mislabelled with this
-repository's URL), and GHCR binds a package to the repository that first
-published it. Resolution is deleting that stale package in the GitHub UI; no
-workflow change is needed.
+repository's URL), and GHCR grants write access at the package level. The
+repository's Actions `packages: write` permission alone does not grant access to
+this existing package. GitHub documents **Package settings → Manage Actions
+access → Add repository → Write** for this case.
+
+On 2026-09-25, the operator reported removing the package, but a fresh
+workflow dispatch ([run 36106183963](https://github.com/prv-ctech/deepseek-harness/actions/runs/36106183963))
+still failed at the push with the same error. A fresh GHCR manifest request
+still served the old `:latest` digest
+`sha256:9f8f4b442f32c60a5f64fa1e5a2a1674fec71dc24c3b85c1fdb7c1bd3a7f6430`;
+`0.1.7-rc.2` was absent. Package deletion or repository access is therefore
+not yet verified. The available CLI token lacks `read:packages`, so package
+settings cannot be inspected through the API. Do not describe CI or the
+published image as working until a run pushes, smoke-tests, and retags
+`:latest` successfully.
+
+Local recheck on 2026-09-25: the `0.1.7-rc.2` image built, and all four
+supported entrypoint forms (default, bare app flags, `web --patch … --no-open`,
+and `web --no-open`) reached a healthy server as UID `99` and printed the public
+URL. The authenticated HTTP flow returned `/api/settings/describe` 401 without
+a cookie, 403 for an untrusted Host, then 200 with `writable:true` after the
+launch-token exchange (303); the served page included `ownsHost:true`. A
+proposed uncommitted entrypoint change for `--patch FILE web` was discarded:
+upstream DSH itself rejects that argument order with `--profile <name> is
+required`. The supported order is `web --patch FILE`.
