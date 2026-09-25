@@ -29,7 +29,7 @@ services:
       DSH_PERMISSION_MODE: ${DSH_PERMISSION_MODE:-workspace-write}
     ports:
       # Host side defaults to all interfaces so newt/Pangolin can reach it.
-      # Narrow it to a specific LAN address, e.g. 192.168.13.9:3080:3080.
+      # Narrow it to a specific LAN address, e.g. 192.168.1.10:3080:3080.
       - "${DSH_BIND:-0.0.0.0}:${DSH_PORT:-3080}:3080"
     volumes:
       - dsh-state:/home/node/.dsh

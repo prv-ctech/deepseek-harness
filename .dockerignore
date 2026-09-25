@@ -1,26 +1,8 @@
-# Never in a build context: docs, history, editor and OS noise.
-.git
-.gitignore
-.github
-docs
-*.md
-!README.md
-
-# Local runtime state — never baked into an image.
-.dsh/
-data/
-state/
-workspace/
-*.log
-
-# Editor/OS junk
-.DS_Store
-Thumbs.db
-*.swp
-.idea/
-.vscode/
-
-# Local deployment values
-.env
-.env.*
-!.env.example
+# Send only the sources copied by Dockerfile. Everything else, including local
+# credentials and runtime state, stays outside the build context.
+**
+!Dockerfile
+!docker-entrypoint.sh
+!proxy.patch.yml
+!fix/
+!fix/owns-host.mjs

@@ -1,9 +1,13 @@
 # Security & Compatibility Audit — `@goodandready/dsh-lanmode` v0.8.5
 
+Historical source audit. The shipped image uses the verified recipe in the
+repository README and `docs/PLAN.md` §7; some recommendations below were
+revised after live testing.
+
 - **Audited repo:** `/tmp/dsh-research/lanmode` (== `github.com/GooDAnDReaDY/dsh-lanmode`), MIT.
 - **Commit:** `2bab4a068daf4b5207fece5a34e95d6e3edb4e17` (main), package `@goodandready/dsh-lanmode` v0.8.5.
 - **Reference platform:** official DSH `0.1.7-rc.2` at `/tmp/dsh-research/official` (git HEAD `477b4f420553e8a52c2fbccc464d7561b239c443`, merge PR #5180).
-- **Our target:** container + config for DSH 0.1.7-rc.2 behind an external TLS-terminating reverse proxy (Pangolin) at `https://deepseek.prvmr.com/`.
+- **Our target:** container + config for DSH 0.1.7-rc.2 behind an external TLS-terminating reverse proxy (Pangolin) at `https://dsh.example.com/` (sanitized example hostname).
 - **Method:** read-only source audit. No edits, no installs, no services run in the audited repo. Every claim carries `path:line`; anything not confirmed in source is marked **UNVERIFIED**.
 - **Size:** ~11,300 JS lines under `lib/` (plus ~2,736 lines of injected client JS in `lib/client-parts/`, and shell/HTML in `lib/login-page.js` 458 / `lib/qr.js` 469). No regression-test directory ships in the published package (`package.json` `test` script points at `test/*.test.mjs`, but `files` is `["lib/","cordis.patch.yml","README*.md","LICENSE"]`).
 
@@ -114,10 +118,10 @@ Two mismatches vs `COMPUTED`: (a) a leading `transport?.ownsHost === true || `; 
 Repo-wide grep for the plugin's literal → **zero hits** in TS source.
 
 **Compiled artifact — previously UNVERIFIED, now VERIFIED negative via the locally installed package:**
-- `/home/prv-cn/.local/share/dsh-tauri/dependencies/dsh/node_modules/@deepseek-ai/dsh-client-connection/lib/client.js` (221,770 bytes) contains
+- A local DSH install's `node_modules/@deepseek-ai/dsh-client-connection/lib/client.js` (221,770 bytes) contains
   `isLoopback: transport?.ownsHost === true || pageLocation === void 0 || isLoopbackHostname(pageLocation.hostname),`
 - `grep -F 'isLoopback: pageLocation === void 0 || isLoopbackHostname(pageLocation.hostname),'` → **0 matches**.
-- A `0.1.7-alpha.1` bundle at `/home/prv-cn/src/deepseek-harness-desktop/node_modules/.pnpm/@deepseek-ai+dsh-client-connection@0.1.7-alpha.1_.../lib/client.js` shows the identical expression.
+- A local `0.1.7-alpha.1` desktop bundle's `node_modules/.pnpm/@deepseek-ai+dsh-client-connection@0.1.7-alpha.1_.../lib/client.js` shows the identical expression.
 
 So the transpiled form *does* normalise `undefined → void 0`, but the leading `transport?.ownsHost === true || ` clause makes the plugin's literal unmatchable. **`forceLoopback` is a permanent no-op from ~0.1.7 onward.** (The only residual uncertainty is the exact future-minor bundle text, which by the plugin's own admission may drift; the *mechanism* is unsound regardless.)
 
@@ -149,7 +153,7 @@ The genuinely supported mechanisms are:
 2. **`trustedHosts`** (`packages/client/connection/src/index.ts:103,110-115`) — the *authored* way to let a real public authority through the Host/Origin fence without forging anything. This is the correct lever for Pangolin.
 3. **`tapIndex`** — the raw HTML escape hatch, appropriate for innocuous markup (meta tags, styles) but not for re-deriving security-relevant page state.
 
-**Conclusion:** for our design, do **not** inject `ownsHost`. Serve the page at the real FQDN and (if needed) set `trustedHosts: ['deepseek.prvmr.com']`. If we ever need the privileged UI reachable from the browser, that is exactly what `trustedHosts` + DSH's own browser auth already permit; forcing `ownsHost` is redundant and diverges from the documented model.
+**Conclusion:** for our design, do **not** inject `ownsHost`. Serve the page at the real FQDN and (if needed) set `trustedHosts: ['dsh.example.com']`. If we ever need the privileged UI reachable from the browser, that is exactly what `trustedHosts` + DSH's own browser auth already permit; forcing `ownsHost` is redundant and diverges from the documented model.
 
 ---
 
@@ -259,7 +263,7 @@ All in `lib/auth.js` (354 lines) + `lib/routes/auth.js`.
 
 **Mode selection** (`lib/mode.js` + `lib/index.js:346-406`): `mode: auto` (the default) probes each LAN address on `webServer.port`; **if anything answers**, it concludes "existing proxy" and **opens no listener at all** (`lib/mode.js:69-75`). If nothing answers and `directPort` is free, it starts the direct listener (`:92-96`). In a container behind Pangolin, the container's own LAN address will typically NOT be bound by the harness (which binds `127.0.0.1`), so `auto` would likely choose **direct** and open `127.0.0.1:3088` — harmless (loopback only) but pointless. If the operator sets `directHost: 0.0.0.0`, it becomes an **additional exposed port** that Pangolin was not asked to protect.
 
-**Can it be used with a proxy that preserves Host?** Only by bypassing the bridge: the bridge *rewrites* Host/Origin to `127.0.0.1:port` (`lib/bridge-utils.js:20-30`), destroying the real Host. So if Pangolin fronts lanmode's bridge, the core never sees `deepseek.prvmr.com`, and per-host policy/logging upstream is impossible. To front the harness directly, Pangolin must target `127.0.0.1:3080` (the harness), **not** the bridge, and `trustedHosts` must include the FQDN. In that topology the bridge is dead weight.
+**Can it be used with a proxy that preserves Host?** Only by bypassing the bridge: the bridge *rewrites* Host/Origin to `127.0.0.1:port` (`lib/bridge-utils.js:20-30`), destroying the real Host. So if Pangolin fronts lanmode's bridge, the core never sees `dsh.example.com`, and per-host policy/logging upstream is impossible. To front the harness directly, Pangolin must target `127.0.0.1:3080` (the harness), **not** the bridge, and `trustedHosts` must include the FQDN. In that topology the bridge is dead weight.
 
 ---
 
@@ -351,7 +355,7 @@ Everything transport: TLS termination, HSTS, certificate trust, the public IP/po
 5. **Assumption self-check on boot** (`lib/assumptions.js`) — a 3-second post-start assertion that logs drift is a good instinct; ours should assert *our* seams, not upstream internals.
 
 ### Avoid (do not copy, in priority order)
-1. **Never forge `Host`/`Origin`** (`lib/bridge-utils.js:20-30`). Use `trustedHosts: ['deepseek.prvmr.com']` (`packages/client/connection/src/index.ts:103`) so the real authority passes the fence honestly.
+1. **Never forge `Host`/`Origin`** (`lib/bridge-utils.js:20-30`). Use `trustedHosts: ['dsh.example.com']` (`packages/client/connection/src/index.ts:103`) so the real authority passes the fence honestly.
 2. **Never inject `__DSH_TRANSPORT__` into a served page.** Upstream states served pages never carry it (`packages/client/connection/src/client/index.ts:96-104`); rely on `trustedHosts` + DSH's own auth.
 3. **Never text-replace a minified upstream bundle** (`lib/loopback-source.js:13`). It is already a no-op on our target, and it is unbounded version risk.
 4. **Never enable a fail-open privilege flag by default** (`unlockPrivileged: true`).
@@ -364,8 +368,8 @@ Everything transport: TLS termination, HSTS, certificate trust, the public IP/po
 
 ### Minimal correct recipe for our design
 - Run official DSH 0.1.7-rc.2 bound to `127.0.0.1:3080` (its secure default; `--host 0.0.0.0` is rejected upstream at `packages/bundle/web-app/src/startup.ts:75-77`).
-- Pangolin terminates TLS and proxies to the container, **preserving the real `Host`** (`deepseek.prvmr.com`) and **stripping inbound `X-Forwarded-*`/`CF-Connecting-IP`**.
-- Set `trustedHosts: ['deepseek.prvmr.com']` on the client-connection plugin so the Host/Origin fence accepts the public authority (`packages/client/connection/src/index.ts:103,132`).
+- Pangolin terminates TLS and proxies to the container, **preserving the real `Host`** (`dsh.example.com`) and **stripping inbound `X-Forwarded-*`/`CF-Connecting-IP`**.
+- Set `trustedHosts: ['dsh.example.com']` on the client-connection plugin so the Host/Origin fence accepts the public authority (`packages/client/connection/src/index.ts:103,132`).
 - Let DSH's launch-token → signed `HttpOnly; SameSite=Strict` cookie do authentication (`packages/client/connection/src/browser-auth.ts:238-300`). Force `Secure` on the cookie — note upstream omits it (`:121-123`), so this is the one thing to verify/override in our recipe.
 - Inject only presentation markup through `webserver/index-inject`. Nothing else.
 - Do **not** install lanmode.

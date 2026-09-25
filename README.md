@@ -67,7 +67,7 @@ to dsh as `--trusted-host`; anything the browser addresses that is missing from
 that list gets HTTP 403.
 
 Add extra authorities (a LAN address, an alternate hostname) with
-`DSH_TRUSTED_HOSTS="192.168.13.9:3080,dsh.lan"`. When the container binds
+`DSH_TRUSTED_HOSTS="192.168.1.10:3080,dsh.lan"`. When the container binds
 `0.0.0.0`, upstream derives the host's LAN IP literals automatically, so only
 named authorities need listing.
 
@@ -199,6 +199,10 @@ tracked RC and is moved by copying the manifest that already passed the smoke
 test.
 
 Images are `linux/amd64` on `ghcr.io/prv-ctech/deepseek-harness`.
+
+The Docker build can copy only `Dockerfile`, `docker-entrypoint.sh`,
+`proxy.patch.yml`, and `fix/owns-host.mjs` from its context. Local `.env` files,
+credentials, runtime state, and research notes are excluded by `.dockerignore`.
 
 ```sh
 # build locally

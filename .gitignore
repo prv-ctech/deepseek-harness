@@ -3,10 +3,16 @@
 data/
 state/
 workspace/
+*.jsonl
+*.db
+*.sqlite
+*.sqlite3
 
 # Build artifacts
 *.log
 *.tmp
+node_modules/
+dist/
 
 # Editor/OS junk
 .DS_Store
@@ -15,5 +21,23 @@ Thumbs.db
 .idea/
 .vscode/
 
-# Local deployment values (compose reads this file automatically)
+# Local deployment values (compose reads .env automatically)
 .env
+.env.*
+!.env.example
+.envrc
+
+# Credentials and private keys
+secrets/
+.ssh/
+.aws/
+.kube/
+.docker/
+.npmrc
+.netrc
+.credentials.yaml
+credentials*.json
+*.pem
+*.key
+*.p12
+*.pfx

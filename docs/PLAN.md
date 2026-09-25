@@ -1,8 +1,13 @@
 # DSH 0.1.7-rc.2 — Docker distribution for Pangolin (research + plan)
 
 Target: upstream `@deepseek-ai/dsh@0.1.7-rc.2`, containerized, reachable at
-`https://deepseek.prvmr.com/` through Pangolin, with **no localhost/127-only
+`https://dsh.example.com/` through Pangolin, with **no localhost/127-only
 assumptions** and **no external plugin dependency** (no `dsh-lanmode`).
+
+Hostnames, IP addresses, and local paths in this research record are sanitized
+examples; use the deployment's actual values when following it.
+Earlier sections retain research-stage recommendations; §7 and the README
+describe the shipped image.
 
 Everything below was verified against the real 0.1.7-rc.2 install
 (`/tmp/dsh-probe/prefix`, `dsh --version` → `0.1.7-rc.2`), a running patched
@@ -43,7 +48,7 @@ patches may use expressions. Therefore the `ownsHost` global needs a real
   `rpc-host.ts:104-107` → `403` untrusted, `401` unauthenticated.
 - Verified live: `GET /` no token → **401**; `Host: evil.example.com` → **403**;
   trusted Host + cookie → passes. **Never rewrite Host to `127.0.0.1:3080`** —
-  the browser `Origin: https://deepseek.prvmr.com` then fails equality → 403.
+  the browser `Origin: https://dsh.example.com` then fails equality → 403.
 - Pangolin's Traefik preserves the inbound Host by default (no `passHostHeader`
   override on resource services; only the maintenance/AI-gateway routes pin it).
   The fence works as long as the site's real Host reaches DSH unchanged.
@@ -53,7 +58,7 @@ patches may use expressions. Therefore the `ownsHost` global needs a real
   `GET /?token=…` → **303** `location: ./` + `Set-Cookie: dsh-auth-<hash>=…`.
 - Verified live: `set-cookie: …; Max-Age=2592000; Path=/; HttpOnly;
   SameSite=Strict` — **no `Secure` attribute**, and the signed payload binds
-  `"authority":"deepseek.prvmr.com"`. The cookie is refused on any other Host.
+  `"authority":"dsh.example.com"`. The cookie is refused on any other Host.
 - HMAC secret persists in `$DSH_HOME/.credentials.yaml`; cookies survive
   restarts, but the *printed URL* rotates every restart.
 
@@ -179,7 +184,7 @@ Design decisions:
 2. **Bind `0.0.0.0` inside the container** via the patch overlay; recommend the
    compose file publish to `127.0.0.1:3080` on the host and point Pangolin at
    that, or target the container IP directly.
-3. **`trustedHosts: ['deepseek.prvmr.com']`** (configurable via env so the FQDN
+3. **`trustedHosts: ['dsh.example.com']`** (configurable via env so the FQDN
    is not hardcoded).
 4. **Ship the `ownsHost` plugin** so remote Settings is fully writable — the one
    thing `trustedHosts` alone does not fix.
@@ -263,18 +268,19 @@ distribution:
 ## 6. Decisions taken (answers to the original open questions)
 
 1. **Topology** — Pangolin runs on an external VPS; `newt` sits on the private
-   Docker network and targets the site at `http://192.168.13.9:3080`. The
+   Docker network and targets the site at `http://192.168.1.10:3080`. The
    container therefore publishes `0.0.0.0:3080:3080` on the host (any
    non-loopback interface; a `127.0.0.1` publish is invisible to `newt`), and
    DSH binds `0.0.0.0` inside the container. Pangolin preserves the inbound
    `Host` by default, which the `/api` fence depends on.
-2. **FQDN** — configurable via `DSH_PUBLIC_HOST`, default `deepseek.prvmr.com`.
-   The entrypoint passes it as `--trusted-host`, so trust needs no patch row and
-   no generated YAML. `DSH_TRUSTED_HOSTS` adds extra authorities.
+2. **FQDN** — configurable via `DSH_PUBLIC_HOST`; the image has no default.
+   Compose requires a value, while the Unraid template leaves it optional for
+   access by IP. The entrypoint passes a configured value as `--trusted-host`;
+   `DSH_TRUSTED_HOSTS` adds extra authorities.
 3. **Sandbox** — stays **on** (`workspace-write`). Landlock is the rung that
    works in a container; `danger-full-access` is documented as the escape hatch.
-4. **Location** — `/home/prv-cn/Documents/coding/deepseek-harness` (the Samba
-   mount cannot host the edit tools: `ENOTTY` on their temp-dir chmod).
+4. **Location** — a local checkout (the Samba mount could not host the edit
+   tools: `ENOTTY` on their temp-dir chmod).
 
 ## 7. Implementation status
 
