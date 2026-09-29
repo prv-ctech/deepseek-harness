@@ -378,4 +378,8 @@ in this image at all — no shared libraries, no fonts — which turns
 `dsh-realbrowser` into an unexplained `WebSocket closed: 1006`. Chrome's version
 is owned by the image build, and the workflow's smoke test launches it under the
 hardened flags (`--read-only`, `--cap-drop ALL`, `no-new-privileges`, `noexec
-/tmp`) before either package's `:latest` moves.
+/tmp`) before either package's `:latest` moves. The variant also ships the
+non-Latin font sets (`fonts-noto-cjk`, `fonts-noto-core`,
+`fonts-noto-color-emoji`, `fonts-dejavu-core`): the base image's Latin-only
+fonts turn every CJK or Arabic page into tofu without an error anywhere, and the
+smoke test asserts that coverage per package.

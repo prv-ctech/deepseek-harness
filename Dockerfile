@@ -69,6 +69,16 @@ RUN test "$(dsh --version)" = "${DSH_VERSION}"
 # "WebSocket closed: 1006". Listing them keeps that true regardless of what
 # Chrome declares today.
 #
+# Latin-only is not enough to browse either: with just fonts-liberation a page
+# in Japanese, Chinese, Korean or Arabic draws tofu — the glyphs are absent, so
+# nothing errors and nothing renders. The Noto sets go in for that reason
+# (noto-core covers Arabic, Hebrew, Devanagari, Thai and ~60 more scripts;
+# noto-cjk covers Japanese, Korean and Simplified/Traditional Chinese;
+# noto-color-emoji covers emoji), plus fonts-dejavu-core, the family
+# fontconfig's own latin.conf prefers. Cost is roughly 145 MB installed, ~89 MB
+# of it noto-cjk, and the smoke test asserts a representative coverage per
+# package so a dropped font fails the build instead of a user's page.
+#
 # The hardened runtime is unaffected: nothing here needs exec from /tmp, so
 # --read-only, --cap-drop ALL, no-new-privileges and a noexec /tmp all keep
 # working. No browser flag belongs here either — the caller passes --no-sandbox,
@@ -85,7 +95,10 @@ RUN if [ "$INSTALL_CHROME" = "true" ]; then \
       echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" \
         > /etc/apt/sources.list.d/google-chrome.list; \
       apt-get update; \
-      apt-get install -y --no-install-recommends google-chrome-stable fontconfig fonts-liberation; \
+      apt-get install -y --no-install-recommends \
+        google-chrome-stable fontconfig \
+        fonts-liberation fonts-dejavu-core \
+        fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji; \
       apt-get purge -y --auto-remove gnupg; \
       rm -rf /var/lib/apt/lists/*; \
     fi

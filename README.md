@@ -163,15 +163,24 @@ On Unraid, set *Repository* to `ghcr.io/prv-ctech/deepseek-harness-chrome:latest
   Chrome under it**: `--read-only`, `--cap-drop ALL`, `no-new-privileges` and
   `noexec /tmp` all stay. Chrome never needs to execute anything from `/tmp`;
   its only writable paths are the state volume (profile) and `/tmp`.
-- **`fontconfig` and `fonts-liberation` are installed explicitly** rather than
-  left to Chrome's own dependency list. Under `--no-install-recommends` a
-  missing fontconfig makes Chrome abort with
+- **Fontconfig and a font set are installed explicitly** rather than left to
+  Chrome's own dependency list. Under `--no-install-recommends` a missing
+  fontconfig makes Chrome abort with
   `FATAL: SkFontMgr_FontConfigInterface.cpp Not implemented` and signal 6 on any
   page containing a `<form>` — which surfaces misleadingly as
-  `WebSocket closed: 1006`.
-- **Cost and ownership**: roughly 150–250 MB more image, and the Chrome version
-  follows the image build, so upgrading Chrome means rebuilding the image. That
-  is deliberate: one artefact, one Chrome, no per-deployment browser download.
+  `WebSocket closed: 1006`. Latin-only is not enough to browse either: without
+  the non-Latin families a Japanese, Korean, Chinese or Arabic page draws tofu,
+  silently. So the image ships `fonts-noto-core` (Arabic, Hebrew, Devanagari,
+  Thai, ~60 scripts), `fonts-noto-cjk` (Japanese, Korean, Simplified and
+  Traditional Chinese), `fonts-noto-color-emoji`, plus `fonts-dejavu-core`, the
+  family fontconfig's own `latin.conf` prefers. The smoke test asserts one
+  coverage per package — `fc-list :lang=ja`, `:lang=ar`, `:charset=1f600` — so
+  dropping a font package fails the build, not the user's page.
+- **Cost and ownership**: Chrome adds roughly 150–250 MB and the font set about
+  145 MB more (~89 MB of that `fonts-noto-cjk`), so budget roughly 300–400 MB
+  over the base image. The Chrome version follows the image build, so upgrading
+  Chrome means rebuilding the image. That is deliberate: one artefact, one
+  Chrome, no per-deployment browser download.
 
 ## Running it other ways
 

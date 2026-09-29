@@ -265,6 +265,15 @@ jobs:
             # "FATAL: SkFontMgr_FontConfigInterface.cpp Not implemented" and
             # signal 6 — which reaches the plugin as a closed CDP websocket.
             docker exec "$name" test -f /etc/fonts/fonts.conf
+            # ...and the fonts themselves, by coverage rather than by path: a
+            # missing Japanese or Arabic family draws tofu, it does not error,
+            # so nothing else here would notice. fc-list filters on what the
+            # installed fonts actually cover, which makes an empty result the
+            # failure — one query per font package, so dropping any of them
+            # fails the build.
+            docker exec "$name" sh -c 'test -n "$(fc-list :lang=ja)"'      # fonts-noto-cjk
+            docker exec "$name" sh -c 'test -n "$(fc-list :lang=ar)"'      # fonts-noto-core
+            docker exec "$name" sh -c 'test -n "$(fc-list :charset=1f600)"' # fonts-noto-color-emoji
 
             # compose.yaml's posture, including the five capabilities the
             # entrypoint's chown/setpriv path needs; everything else is dropped.
