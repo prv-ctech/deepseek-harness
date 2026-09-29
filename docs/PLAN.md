@@ -365,3 +365,17 @@ launch-token exchange (303); the served page included `ownsHost:true`. A
 proposed uncommitted entrypoint change for `--patch FILE web` was discarded:
 upstream DSH itself rejects that argument order with `--profile <name> is
 required`. The supported order is `web --patch FILE`.
+
+**Opt-in Chrome variant (2026-09-29).** Decision 8 still holds for the default
+image, and runzhliu's stack — Chromium *plus* noVNC *plus* a desktop — is still
+not shipped. What ships now is a second package,
+`ghcr.io/prv-ctech/deepseek-harness-chrome`, built from the same Dockerfile with
+`--build-arg INSTALL_CHROME=true`: Google Chrome from Google's apt repository,
+no desktop, no VNC, and no browser flags added by the entrypoint (the plugin
+keeps passing `--no-sandbox --disable-dev-shm-usage …`). The reason is concrete
+rather than aspirational: a Chrome downloaded into the state volume cannot run
+in this image at all — no shared libraries, no fonts — which turns
+`dsh-realbrowser` into an unexplained `WebSocket closed: 1006`. Chrome's version
+is owned by the image build, and the workflow's smoke test launches it under the
+hardened flags (`--read-only`, `--cap-drop ALL`, `no-new-privileges`, `noexec
+/tmp`) before either package's `:latest` moves.

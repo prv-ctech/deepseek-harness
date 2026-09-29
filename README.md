@@ -94,6 +94,7 @@ requests, so it is not optional.
 | `DSH_WORKSPACE_DIR` | `/workspace` | Directory chowned at start |
 | `DSH_BIND` / `DSH_PORT` | `0.0.0.0` / `3080` | Host side of the published port |
 | `DSH_WORKSPACE` | `./workspace` | Host path mounted at `/workspace` |
+| `DSH_IMAGE` | `ghcr.io/prv-ctech/deepseek-harness:latest` | Image Compose runs; set the `-chrome` tag for the Chrome variant |
 
 ### The sandbox
 
@@ -130,6 +131,47 @@ On a hardened `--tmpfs /tmp:noexec` container that fails with
 `Cannot find module …/napi-v9-linux-x64-gnu/require_builtin.node` and dsh never
 starts. `NARB_NATIVE_CACHE_DIR=/home/node/.dsh/cache/native` is baked in for this
 reason — it points the cache at a real filesystem so you can keep `noexec /tmp`.
+
+## The `-chrome` image
+
+`ghcr.io/prv-ctech/deepseek-harness-chrome` is this image plus Google Chrome,
+installed at the system level from Google's apt repository
+(`/usr/bin/google-chrome-stable`). It exists because a plugin that drives a real
+browser — `dsh-realbrowser`, or anything else that speaks CDP — otherwise
+downloads a browser into the state volume, and that copy cannot run here: the
+base image ships neither Chrome's shared libraries nor any font, so it fails at
+`ldd` and aborts on its first page.
+
+Everything else is identical: same entrypoint, same patch layer, same hardening,
+same ports, same state volume. Switching is one variable:
+
+```sh
+DSH_IMAGE=ghcr.io/prv-ctech/deepseek-harness-chrome:latest docker compose up -d
+```
+
+On Unraid, set *Repository* to `ghcr.io/prv-ctech/deepseek-harness-chrome:latest`.
+
+- **The image copy wins the lookup.** The plugin resolves
+  `google-chrome-stable` by name from `PATH` before it considers a downloaded
+  one, so `/usr/bin/google-chrome-stable` is used and the volume store becomes a
+  fallback only.
+- **No browser flags are added by this image.** The entrypoint passes none; the
+  plugin already passes `--no-sandbox --disable-dev-shm-usage --no-first-run
+  --no-default-browser-check`, plus `--remote-debugging-port` and a
+  `--user-data-dir` under the state volume.
+- **The hardened runtime is unchanged, and the build's smoke test exercises
+  Chrome under it**: `--read-only`, `--cap-drop ALL`, `no-new-privileges` and
+  `noexec /tmp` all stay. Chrome never needs to execute anything from `/tmp`;
+  its only writable paths are the state volume (profile) and `/tmp`.
+- **`fontconfig` and `fonts-liberation` are installed explicitly** rather than
+  left to Chrome's own dependency list. Under `--no-install-recommends` a
+  missing fontconfig makes Chrome abort with
+  `FATAL: SkFontMgr_FontConfigInterface.cpp Not implemented` and signal 6 on any
+  page containing a `<form>` — which surfaces misleadingly as
+  `WebSocket closed: 1006`.
+- **Cost and ownership**: roughly 150–250 MB more image, and the Chrome version
+  follows the image build, so upgrading Chrome means rebuilding the image. That
+  is deliberate: one artefact, one Chrome, no per-deployment browser download.
 
 ## Running it other ways
 
@@ -177,8 +219,9 @@ restart**, so a 401 after a restart means: re-read the log line. A 403 means the
 
 ## What this image is not
 
-- **No browser/desktop stack.** No Chromium, no noVNC. It serves the web GUI and
-  the agent's own tools; it is not a virtual desktop.
+- **No desktop.** The plain image ships no browser at all; the `-chrome` image
+  ships Chrome and its runtime libraries, but no desktop and no noVNC. The GUI's
+  browser view is a CDP screencast, not a virtual desktop.
 - **Not a TLS terminator.** Put it behind a proxy that does TLS.
 - **No `Secure` cookie, no security headers** — upstream cannot, so the proxy
   must. See above.
@@ -198,14 +241,18 @@ reaches versions that were already published. `:latest` follows the newest
 tracked RC and is moved by copying the manifest that already passed the smoke
 test.
 
-Images are `linux/amd64` on `ghcr.io/prv-ctech/deepseek-harness`.
+Images are `linux/amd64` and published as two packages —
+`ghcr.io/prv-ctech/deepseek-harness` and
+`ghcr.io/prv-ctech/deepseek-harness-chrome`. Both come from the same Dockerfile;
+the Chrome one is the same build with `--build-arg INSTALL_CHROME=true`, and each
+package carries its own recipe label, so neither can mask a rebuild of the other.
 
 The Docker build can copy only `Dockerfile`, `docker-entrypoint.sh`,
 `proxy.patch.yml`, and `fix/owns-host.mjs` from its context. Local `.env` files,
 credentials, runtime state, and research notes are excluded by `.dockerignore`.
 
 ```sh
-# build locally
+# build locally (add INSTALL_CHROME=true for the -chrome variant)
 docker build --build-arg DSH_VERSION=0.1.7-rc.2 -t dsh .
 
 # pin an exact release
@@ -216,7 +263,8 @@ docker run -d -p 3080:3080 -v dsh-state:/home/node/.dsh \
 ## Layout
 
 ```
-Dockerfile              image build; installs the published package, no fork
+Dockerfile              image build; the base package, and the -chrome variant
+                        when built with INSTALL_CHROME=true
 docker-entrypoint.sh    ownership + PUID/PGID drop, then exec dsh
 proxy.patch.yml         the launch layer: 0.0.0.0 bind, plugin insert
 fix/owns-host.mjs       restores remote Settings, prints the public URL
@@ -229,7 +277,8 @@ docs/research/          audits of upstream 0.1.7-rc.2 and three related repos
 ## Upgrading upstream
 
 Nothing to merge. When a new RC is published the workflow builds, smoke-tests
-(version equality, PID-1/uid drop, the launch-token gate) and pushes it. The
+(version equality, PID-1/uid drop, the launch-token gate, and — for the `-chrome`
+package — a real headless launch under the hardened flags) and pushes it. The
 seams this repo uses are upstream's own, so they move with it. The one thing to
 re-check on a major release is the `webserver` row's config keys: a patch layer
 replaces that row's whole config, and a key upstream adds must be restated in

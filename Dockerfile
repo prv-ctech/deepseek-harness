@@ -53,6 +53,43 @@ RUN npm install --global --omit=dev --no-audit --no-fund \
 # version this image claims to be.
 RUN test "$(dsh --version)" = "${DSH_VERSION}"
 
+# Optional Chrome variant: the same image plus a system Chrome, published as
+# `deepseek-harness-chrome` (built with --build-arg INSTALL_CHROME=true).
+# Installed from Google's own apt repo, so it is a real package at
+# /usr/bin/google-chrome-stable: dsh-realbrowser's resolver finds a browser by
+# name before any copy it downloads into the state volume, which makes that
+# downloaded copy a fallback only. Chrome's version therefore follows the image
+# build — bumping Chrome means rebuilding the image, which is the intended
+# ownership model.
+#
+# fontconfig and fonts-liberation are named explicitly even though Chrome
+# usually pulls them in: under --no-install-recommends a missing font makes
+# Chrome abort with "FATAL:SkFontMgr_FontConfigInterface.cpp Not implemented"
+# and signal 6 on any page containing a <form>, which surfaces misleadingly as
+# "WebSocket closed: 1006". Listing them keeps that true regardless of what
+# Chrome declares today.
+#
+# The hardened runtime is unaffected: nothing here needs exec from /tmp, so
+# --read-only, --cap-drop ALL, no-new-privileges and a noexec /tmp all keep
+# working. No browser flag belongs here either — the caller passes --no-sandbox,
+# --disable-dev-shm-usage and the remote-debugging port, not the image.
+ARG INSTALL_CHROME=false
+LABEL com.prvctech.dsh.chrome="${INSTALL_CHROME}"
+RUN if [ "$INSTALL_CHROME" = "true" ]; then \
+      set -eux; \
+      apt-get update; \
+      apt-get install -y --no-install-recommends ca-certificates curl gnupg; \
+      install -d -m 0755 /etc/apt/keyrings; \
+      curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
+        | gpg --dearmor -o /etc/apt/keyrings/google-chrome.gpg; \
+      echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" \
+        > /etc/apt/sources.list.d/google-chrome.list; \
+      apt-get update; \
+      apt-get install -y --no-install-recommends google-chrome-stable fontconfig fonts-liberation; \
+      apt-get purge -y --auto-remove gnupg; \
+      rm -rf /var/lib/apt/lists/*; \
+    fi
+
 ENV DSH_VERSION="${DSH_VERSION}" \
     DSH_HOME=/home/node/.dsh \
     HOME=/home/node \

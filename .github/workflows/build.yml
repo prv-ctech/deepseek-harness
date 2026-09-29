@@ -42,6 +42,9 @@ permissions:
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}
+  # Same recipe, one build arg apart: this package ships the base image plus
+  # system Chrome, for plugins that drive a real browser over CDP.
+  IMAGE_CHROME: ghcr.io/${{ github.repository }}-chrome
   REGISTRY: ghcr.io
   # Lowest release this repo publishes; anything older is out of scope.
   MIN_VERSION: '0.1.7-rc.2'
@@ -57,19 +60,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Two hashes, one per package. The base hash is the plain digest of the
+      # recipe files, so this change alone does not renumber the package that is
+      # already published; the Chrome variant mixes its name in, so the two can
+      # never skip each other's rebuild.
       - name: Compute recipe hash
         id: recipe
         run: |
-          echo "hash=$(cat Dockerfile docker-entrypoint.sh proxy.patch.yml fix/owns-host.mjs \
-            | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
+          files='Dockerfile docker-entrypoint.sh proxy.patch.yml fix/owns-host.mjs'
+          # shellcheck disable=SC2086
+          echo "base=$(cat $files | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
+          echo "chrome=$( { cat $files; echo chrome; } | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
 
       - name: Plan versions to build
         id: plan
         env:
           REQUESTED: ${{ inputs.version }}
           REBUILD: ${{ inputs.rebuild }}
-          RECIPE: ${{ steps.recipe.outputs.hash }}
-          REPOSITORY: ${{ github.repository }}
+          RECIPE_BASE: ${{ steps.recipe.outputs.base }}
+          RECIPE_CHROME: ${{ steps.recipe.outputs.chrome }}
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -93,23 +102,35 @@ jobs:
           # Rebuild when the tag is absent, or when the image carries a different
           # recipe hash. The label is the source of truth, so a Dockerfile fix
           # reaches versions that were already published.
+          #
+          # Both packages are planned from the same version list, one matrix
+          # entry each, so a version cannot end up published for one and missing
+          # for the other.
           entries="[]"
-          for v in $candidates; do
-            reason=""
-            if ! published=$(./scripts/published-recipe.sh "$REGISTRY" "$REPOSITORY" "$v" "$TOKEN" 2>/dev/null); then
-              reason="missing"
-            elif [ "$published" != "$RECIPE" ]; then
-              reason="recipe-changed"
-            fi
-            if [ -n "$reason" ] && [ "${REBUILD:-false}" = "true" ]; then
-              reason="requested"
-            fi
-            if [ -n "$reason" ]; then
-              echo "$IMAGE:$v -> build ($reason)"
-              entries=$(printf '%s' "$entries" | jq -c --arg v "$v" --arg r "$RECIPE" '. + [{version:$v, recipe:$r}]')
-            else
-              echo "$IMAGE:$v -> up to date"
-            fi
+          for variant in base chrome; do
+            case "$variant" in
+              base)   repository="$IMAGE"; recipe="$RECIPE_BASE"; chrome=false ;;
+              chrome) repository="$IMAGE_CHROME"; recipe="$RECIPE_CHROME"; chrome=true ;;
+            esac
+            for v in $candidates; do
+              reason=""
+              if ! published=$(./scripts/published-recipe.sh "$REGISTRY" "$repository" "$v" "$TOKEN" 2>/dev/null); then
+                reason="missing"
+              elif [ "$published" != "$recipe" ]; then
+                reason="recipe-changed"
+              fi
+              if [ -n "$reason" ] && [ "${REBUILD:-false}" = "true" ]; then
+                reason="requested"
+              fi
+              if [ -n "$reason" ]; then
+                echo "$repository:$v -> build ($reason)"
+                entries=$(printf '%s' "$entries" | jq -c \
+                  --arg v "$v" --arg r "$recipe" --arg repo "$repository" --argjson chrome "$chrome" \
+                  '. + [{version:$v, recipe:$r, repository:$repo, chrome:$chrome}]')
+              else
+                echo "$repository:$v -> up to date"
+              fi
+            done
           done
 
           if [ "$entries" = "[]" ]; then
@@ -145,17 +166,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push ${{ matrix.version }}
+      - name: Build and push ${{ matrix.repository }}:${{ matrix.version }}
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
           platforms: linux/amd64
           push: true
-          tags: ${{ env.IMAGE }}:${{ matrix.version }}
+          tags: ${{ matrix.repository }}:${{ matrix.version }}
           build-args: |
             DSH_VERSION=${{ matrix.version }}
             BASE_IMAGE=${{ env.BASE_IMAGE }}
+            INSTALL_CHROME=${{ matrix.chrome }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.dsh-recipe=${{ matrix.recipe }}
@@ -164,18 +186,23 @@ jobs:
 
       # Smoke test the pushed image in the posture the README documents: a
       # published port, a state volume, and the launch-token gate answering.
-      - name: Smoke test ${{ matrix.version }}
+      # The Chrome variant adds the checks that decide whether a browser can
+      # start at all, then a real launch under the hardened runtime.
+      - name: Smoke test ${{ matrix.repository }}:${{ matrix.version }}
         env:
           VERSION: ${{ matrix.version }}
+          IMAGE_TAG: ${{ matrix.repository }}:${{ matrix.version }}
+          CHROME: ${{ matrix.chrome }}
         run: |
           set -euo pipefail
           name="smoke-${VERSION//[^a-zA-Z0-9]/-}"
-          cleanup() { docker rm -f "$name" >/dev/null 2>&1 || true
-                      docker volume rm "${name}-state" >/dev/null 2>&1 || true; }
+          hardened="${name}-chrome"
+          cleanup() { docker rm -f "$name" "$hardened" >/dev/null 2>&1 || true
+                      docker volume rm "${name}-state" "${hardened}-state" >/dev/null 2>&1 || true; }
           trap cleanup EXIT
 
           docker run -d --name "$name" -p 127.0.0.1:3080:3080 \
-            -v "${name}-state:/home/node/.dsh" "$IMAGE:$VERSION"
+            -v "${name}-state:/home/node/.dsh" "$IMAGE_TAG"
 
           for _ in $(seq 1 40); do
             [ "$(docker inspect --format '{{.State.Health.Status}}' "$name" 2>/dev/null)" = "healthy" ] && break
@@ -206,6 +233,78 @@ jobs:
           echo "index status: $code"
           printf '%s' "$code" | grep -qE '^(200|303|401)$'
 
+          # --- Chrome variant -------------------------------------------------
+          # A browser is only shippable from here if it starts under the
+          # hardened runtime, so these run in order: the three checks that
+          # decide whether Chrome can start at all, then a real launch in the
+          # documented posture, with the flags the plugin passes.
+          if [ "$CHROME" = "true" ]; then
+            chrome_version=$(docker exec "$name" google-chrome-stable --version)
+            echo "chrome: $chrome_version"
+            printf '%s' "$chrome_version" | grep -qi 'Google Chrome'
+            # One missing shared library is an immediate abort, and the message
+            # names the library, never the package that should have shipped it.
+            test -z "$(docker exec "$name" sh -c 'ldd /opt/google/chrome/chrome | grep "not found" || true')"
+            # Without fontconfig, Chrome dies on font loading with
+            # "FATAL: SkFontMgr_FontConfigInterface.cpp Not implemented" and
+            # signal 6 — which reaches the plugin as a closed CDP websocket.
+            docker exec "$name" test -f /etc/fonts/fonts.conf
+
+            # compose.yaml's posture, including the five capabilities the
+            # entrypoint's chown/setpriv path needs; everything else is dropped.
+            # Boots dsh too, so it also proves that path survives --read-only.
+            # noexec /tmp is safe: Chrome never execs from there.
+            docker run -d --name "$hardened" \
+              --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+              --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+              --cap-add SETGID --cap-add SETUID \
+              --tmpfs /tmp:rw,nosuid,nodev,noexec,size=256m \
+              -v "${hardened}-state:/home/node/.dsh" "$IMAGE_TAG"
+            for _ in $(seq 1 40); do
+              [ "$(docker inspect --format '{{.State.Health.Status}}' "$hardened" 2>/dev/null)" = "healthy" ] && break
+              sleep 3
+            done
+            docker inspect --format '{{.State.Health.Status}}' "$hardened" | grep -q healthy
+
+            # The volume holds no browser, so the resolver the plugin uses can
+            # only be finding the image's own /usr/bin/google-chrome-stable.
+            docker exec "$hardened" test ! -e /home/node/.dsh/realbrowser/browser
+            docker exec -u 1000:1000 "$hardened" mkdir -p /home/node/.dsh/realbrowser
+
+            # Exactly the plugin's flags. Runs as the runtime uid, like dsh
+            # would: a browser that only works as root is not usable here. No
+            # LD_LIBRARY_PATH and no FONTCONFIG_FILE are set anywhere.
+            docker exec -u 1000:1000 -d "$hardened" sh -c "google-chrome-stable \
+              --headless --no-sandbox --disable-dev-shm-usage --no-first-run \
+              --no-default-browser-check --remote-debugging-port=9222 \
+              --user-data-dir=/home/node/.dsh/realbrowser/browser \
+              'data:text/html,<form><input name=q></form>' \
+              > /home/node/.dsh/chrome.log 2>&1"
+
+            # CDP is the plugin's transport, and /json/list holds the page
+            # target — which only exists once the renderer has committed the
+            # form page, the font path that aborts on a missing fontconfig.
+            # Polled, then asserted once more, so a timeout fails with the real
+            # command instead of a bare loop exit.
+            cdp() { docker exec "$hardened" node -e \
+              "fetch('http://127.0.0.1:9222/$1').then(r=>r.json()).then(v=>process.exit($2)).catch(()=>process.exit(1))"; }
+            cdp_until() { for _ in $(seq 1 20); do cdp "$1" "$2" && return 0; sleep 1; done; cdp "$1" "$2"; }
+            cdp_until json/version '/Chrome\//.test(v.Browser)?0:1'
+            cdp_until json/list 'v.some(t=>/^data:text\/html/.test(t.url))?0:1'
+            if docker exec "$hardened" grep -qE 'signal 6|FATAL' /home/node/.dsh/chrome.log; then
+              docker exec "$hardened" cat /home/node/.dsh/chrome.log
+              echo "::error::Chrome aborted under the hardened runtime"
+              exit 1
+            fi
+          else
+            # The base package is the one that promises no browser stack, so a
+            # stray Chrome would change its size and its attack surface unseen.
+            # Written as a positive `test`, not `! command -v`: that would also
+            # pass when the exec itself failed.
+            docker exec "$name" test ! -e /usr/bin/google-chrome-stable
+            docker exec "$name" test ! -d /opt/google/chrome
+          fi
+
   latest:
     needs: [plan, build]
     if: needs.plan.outputs.has_work == 'true'
@@ -224,10 +323,15 @@ jobs:
       # tracked version, which exists by now either because this run built it or
       # because it was already up to date — the matrix alone would be wrong,
       # since it lists only what needed building.
+      #
+      # Both packages, one line each: they are published in lockstep, so leaving
+      # the Chrome variant behind would pin it to a version the base moved off.
       - name: Retag :latest
         env:
           NEWEST: ${{ needs.plan.outputs.newest }}
         run: |
           set -euo pipefail
-          echo "latest -> $NEWEST"
-          docker buildx imagetools create -t "$IMAGE:latest" "$IMAGE:$NEWEST"
+          for repository in "$IMAGE" "$IMAGE_CHROME"; do
+            echo "$repository:latest -> $NEWEST"
+            docker buildx imagetools create -t "$repository:latest" "$repository:$NEWEST"
+          done
