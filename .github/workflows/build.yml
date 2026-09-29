@@ -166,9 +166,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push ${{ matrix.repository }}:${{ matrix.version }}
+      # The push can be refused once with `denied: permission_denied:
+      # write_package` when this job races a sibling matrix leg that is creating
+      # the same brand-new package — that is how the chrome package's first
+      # publication lost one tag while the sibling pushed the same name 40s
+      # later. Losing that race is not a build failure, so the push is retried
+      # with identical inputs; the job still fails if the retry fails too.
+      - id: push
+        name: Build and push ${{ matrix.repository }}:${{ matrix.version }}
         uses: docker/build-push-action@v6
-        with:
+        continue-on-error: true
+        with: &build-push
           context: .
           file: Dockerfile
           platforms: linux/amd64
@@ -183,6 +191,14 @@ jobs:
             org.opencontainers.image.dsh-recipe=${{ matrix.recipe }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # `outcome`, not `conclusion`: it is the result before continue-on-error,
+      # which is the only place the first attempt's failure is still visible.
+      # Layers are in the gha cache by now, so this costs a push, not a build.
+      - name: Retry push ${{ matrix.repository }}:${{ matrix.version }}
+        if: steps.push.outcome == 'failure'
+        uses: docker/build-push-action@v6
+        with: *build-push
 
       # Smoke test the pushed image in the posture the README documents: a
       # published port, a state volume, and the launch-token gate answering.
