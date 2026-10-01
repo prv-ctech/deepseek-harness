@@ -24,6 +24,32 @@ needs_chown() {
   [ -n "$(find "$1" \( ! -uid "$PUID" -o ! -gid "$PGID" \) -print -quit 2>/dev/null)" ]
 }
 
+# The -plus image ships Debian's apktool, and apktool cannot decode a single
+# resource without its framework file. The Debian wrapper links that framework
+# into ~/.local/share/apktool/framework, but apktool 2.7 resolves the directory
+# from XDG_DATA_HOME, which this image redirects into the state volume — so the
+# wrapper's link lands where nothing looks, apktool creates a 0-byte 1.apk in
+# the directory it does read, and `apktool d` fails with "Could not load
+# resources.arsc". Verified both ways.
+#
+# It is linked here rather than in the image because the state volume is mounted
+# over that path: a link baked into a layer would be invisible at runtime, and
+# would silently differ between a fresh named volume and an upgraded one.
+# Guarded on the framework's presence, so it is a no-op on the base and -chrome
+# images, which ship no apktool at all.
+android_framework() {
+  frame=/usr/share/android-framework-res/framework-res.apk
+  dir="${XDG_DATA_HOME:-}/apktool/framework"
+  [ -e "$frame" ] && [ -n "${XDG_DATA_HOME:-}" ] || return 0
+  if mkdir -p "$dir" 2>/dev/null && ln -sfn "$frame" "$dir/1.apk" 2>/dev/null; then
+    # The runtime uid has to own the directory, or a later `apktool if` cannot
+    # add a framework to it.
+    [ "$(id -u)" = "0" ] && chown "$PUID:$PGID" "$dir" 2>/dev/null || true
+  else
+    log "warning: cannot link the Android framework for apktool into $dir"
+  fi
+}
+
 # Build the arguments for a default `dsh web` launch, then append the caller's.
 # Order matters twice over:
 #   * Unraid replaces CMD, so a bare flag list must still land after `web`.
@@ -96,6 +122,7 @@ if [ "$(id -u)" = "0" ]; then
   # --clear-groups, not --init-groups: the latter refuses a uid that has no
   # passwd entry ("uid 1234 not found"), which is exactly the Unraid PUID=99
   # case.
+  android_framework
   exec setpriv --reuid "$PUID" --regid "$PGID" --clear-groups \
     env HOME="$HOME_DIR" SHELL="${SHELL:-/bin/bash}" DSH_HOME="$STATE" \
     dsh "$@"
@@ -110,4 +137,5 @@ if [ ! -w "$STATE" ]; then
   exit 1
 fi
 
+android_framework
 exec dsh "$@"

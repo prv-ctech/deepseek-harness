@@ -84,8 +84,14 @@ RUN test "$(dsh --version)" = "${DSH_VERSION}"
 # working. No browser flag belongs here either — the caller passes --no-sandbox,
 # --disable-dev-shm-usage and the remote-debugging port, not the image.
 ARG INSTALL_CHROME=false
+# Declared HERE, beside INSTALL_CHROME, because the guard on the next line reads
+# it. A build arg is only visible to instructions after its own ARG: declaring
+# INSTALL_PLUS down in the "+" block instead would leave this condition testing
+# an empty string, and the -plus image would silently ship without a browser.
+ARG INSTALL_PLUS=false
 LABEL com.prvctech.dsh.chrome="${INSTALL_CHROME}"
-RUN if [ "$INSTALL_CHROME" = "true" ]; then \
+LABEL com.prvctech.dsh.plus="${INSTALL_PLUS}"
+RUN if [ "$INSTALL_CHROME" = "true" ] || [ "$INSTALL_PLUS" = "true" ]; then \
       set -eux; \
       apt-get update; \
       apt-get install -y --no-install-recommends ca-certificates curl gnupg; \
@@ -103,13 +109,121 @@ RUN if [ "$INSTALL_CHROME" = "true" ]; then \
       rm -rf /var/lib/apt/lists/*; \
     fi
 
+# Optional "+" variant, published as `deepseek-harness-plus` (--build-arg
+# INSTALL_PLUS=true). It is everything the -chrome image is, plus three things a
+# plugin or a task can discover instead of downloading into the state volume:
+#
+#   1. Python 3.11 + pip, so a tool that probes for `python3` finds one. Plugins
+#      are npm packages, but everything they shell out to — analysis scripts,
+#      androguard, a decompiler's helper — is usually Python.
+#   2. rtk, the token-saving output filter (github.com/rtk-ai/rtk).
+#   3. The Android RE toolchain: jadx, apktool, smali/baksmali, enjarify, aapt,
+#      dexdump, apksigner, zipalign.
+#
+# INSTALL_PLUS=true implies Chrome — the condition above reads both args, so the
+# -plus image is the -chrome image plus this layer and the two cannot drift into
+# shipping different browsers.
+#
+# Cost: roughly 400–500 MB over the -chrome image. openjdk-17-jre-headless alone
+# is 188 MB installed, and that JVM is not optional dressing — jadx, apktool,
+# smali and apksigner are all Java, so one shared JRE is cheaper than four.
+#
+# Version pins are ARGs, not hardcoded strings, so a rebuild of an existing DSH
+# release can move them without touching this layer; each pin is restated with
+# the evidence that justifies it.
+#
+# rtk: the musl tarball, not the .deb the same release publishes. The .deb
+# declares `libc6 (>= 2.39)`; bookworm ships glibc 2.36, so `dpkg -i` would fail
+# the build. The musl build is statically linked (verified: `ldd` reports "not a
+# dynamic executable"), which also keeps it independent of the base image. The
+# checksum is the one in the release's own checksums.txt for this exact asset, so
+# a swapped upload fails here rather than at first use.
+#
+# jadx: 1.5.6 is the newest stable release. Upstream ships no checksums, so this
+# layer verifies by running it — `jadx --version` must answer, which also proves
+# the shared openjdk-17 JRE is new enough for it (jadx 1.5.x needs 11+). The
+# upstream `bin/jadx` launcher is installed as-is: its default JVM flags are
+# accepted by Java 17, so no wrapper is needed.
+#
+# apktool is the package that pulls the rest of the Android side in: it depends
+# on aapt, android-framework-res, libsmali-java and default-jre-headless, and
+# libsmali-java + java-wrappers put `smali` and `baksmali` on PATH as real
+# commands. dexdump, apksigner and zipalign are named explicitly alongside it so
+# the set is readable in one place rather than spread across dependency
+# resolution. enjarify is dex→jar in pure Python, and stands in for dex2jar,
+# which bookworm does not package at all.
+#
+# The symlink loop at the end is load-bearing, not tidiness: aapt, aapt2,
+# dexdump, apksigner and zipalign install to
+# /usr/lib/android-sdk/build-tools/debian/ and Debian ships no /usr/bin entries
+# or update-alternatives for them, so without these links they exist and cannot
+# be run. Only the amd64 build-tools directory is linked, matching the amd64-only
+# publication of this image.
+#
+# androguard is the one analysis tool worth preinstalling: it is the only one
+# here that answers structured questions about an APK (manifest, certificates,
+# classes, strings) from a script, and it is how a "what is in this APK" question
+# gets answered without a hand-written parser. It is installed at build time
+# deliberately — a runtime `pip install` cannot work in the default posture,
+# because the Landlock sandbox grants writes only under /workspace and /tmp and
+# a system-wide install targets /usr/local/lib/python3.11/dist-packages. Debian's
+# pip is also PEP 668 externally-managed, hence --break-system-packages here and
+# PIP_BREAK_SYSTEM_PACKAGES below, which is what makes the agent's own
+# `pip install --user` calls work.
+#
+# The hardened runtime is unaffected: every one of these tools reads the APK and
+# writes under $HOME or the workspace. Nothing here execs from /tmp, so
+# --read-only, --cap-drop ALL, no-new-privileges and a noexec /tmp all keep
+# working.
+ARG RTK_VERSION=0.50.0
+ARG RTK_SHA256=bc2b8902b0d9c796c82ef45f16ae2307e17757afeca5ee156235a3dc7bda5f89
+ARG JADX_VERSION=1.5.6
+ARG ANDROGUARD_VERSION=4.1.4
+RUN if [ "$INSTALL_PLUS" = "true" ]; then \
+      set -eux; \
+      apt-get update; \
+      apt-get install -y --no-install-recommends \
+        ca-certificates curl \
+        python3 python3-pip python3-venv python3-dev \
+        openjdk-17-jre-headless \
+        apktool aapt dexdump apksigner zipalign enjarify \
+        unzip file; \
+      curl -fsSLo /tmp/rtk.tar.gz \
+        "https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}/rtk-x86_64-unknown-linux-musl.tar.gz"; \
+      echo "${RTK_SHA256}  /tmp/rtk.tar.gz" | sha256sum -c -; \
+      tar -xzf /tmp/rtk.tar.gz -C /usr/local/bin rtk; \
+      chmod 0755 /usr/local/bin/rtk; \
+      curl -fsSLo /tmp/jadx.zip \
+        "https://github.com/skylot/jadx/releases/download/v${JADX_VERSION}/jadx-${JADX_VERSION}.zip"; \
+      unzip -q /tmp/jadx.zip -d /opt/jadx; \
+      ln -s /opt/jadx/bin/jadx /usr/local/bin/jadx; \
+      /usr/local/bin/jadx --version; \
+      python3 -m pip install --break-system-packages --no-cache-dir \
+        "androguard==${ANDROGUARD_VERSION}"; \
+      python3 -c 'import androguard; print(androguard.__version__)'; \
+      for tool in aapt aapt2 dexdump apksigner zipalign; do \
+        ln -s "/usr/lib/android-sdk/build-tools/debian/${tool}" "/usr/local/bin/${tool}"; \
+      done; \
+      rm -f /tmp/rtk.tar.gz /tmp/jadx.zip; \
+      rm -rf /var/lib/apt/lists/* /root/.cache; \
+    fi
+
+# PIP_BREAK_SYSTEM_PACKAGES is the only concession the -plus toolchain asks for:
+# Debian's Python 3.11 is marked PEP 668 externally-managed, so every `pip
+# install` in this image is refused without it — including the agent's own. It is
+# inert in the base and -chrome images, which ship no pip. Note what it does not
+# buy: anything meant to outlive a run still has to write under $HOME (the
+# XDG_CACHE_HOME below) or the workspace, because a system-wide install targets
+# /usr/local/lib/python3.11/dist-packages, which the workspace-write sandbox does
+# not grant. `pip install --user` is the install that works from inside it.
 ENV DSH_VERSION="${DSH_VERSION}" \
     DSH_HOME=/home/node/.dsh \
     HOME=/home/node \
     SHELL=/bin/bash \
     PNPM_HOME=/home/node/.dsh/pnpm \
     PUID=1000 \
-    PGID=1000
+    PGID=1000 \
+    PIP_BREAK_SYSTEM_PACKAGES=1
 
 # Keep every cache and store inside the state volume. Anything that resolves
 # under a bare `$HOME` would otherwise try to write to the image layer and fail

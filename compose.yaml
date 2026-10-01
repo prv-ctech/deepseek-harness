@@ -6,8 +6,11 @@ services:
   deepseek-harness:
     # Override DSH_IMAGE to change variant or pin a version — e.g.
     # DSH_IMAGE=ghcr.io/prv-ctech/deepseek-harness-chrome:latest when a plugin
-    # (dsh-realbrowser) needs the Chrome the -chrome image ships. Nothing else
-    # changes: ports, caps and hardening are the same for both variants.
+    # (dsh-realbrowser) needs the Chrome the -chrome image ships, or
+    # DSH_IMAGE=ghcr.io/prv-ctech/deepseek-harness-plus:latest for the -plus
+    # image, which is the -chrome image plus python/pip, rtk and the Android
+    # reverse-engineering toolchain. Nothing else changes: ports, caps and
+    # hardening are the same for all three variants.
     image: ${DSH_IMAGE:-ghcr.io/prv-ctech/deepseek-harness:latest}
     container_name: deepseek-harness
     restart: unless-stopped

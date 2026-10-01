@@ -29,6 +29,8 @@ WHAT THE AGENT CAN REACH: the Workspace mount, and anything else you mount into 
 
 VERSIONS: :latest follows the newest upstream release candidate. Every upstream version also gets its own tag (e.g. 0.1.7-rc.2) which you can pin in Repository instead. dsh is a developer preview with breaking changes between releases - 0.1.7 migrated session logs to a format that cannot be downgraded - so consider LEAVING AUTO-UPDATE OFF, backing up appdata first, and reading the release notes before updating.
 
+IMAGE VARIANTS: the Repository above pulls the plain image. To change variant, edit Repository and Update. "-chrome" adds a real system Chrome at /usr/bin/google-chrome-stable for plugins that drive a browser (dsh-realbrowser) - about 300-400 MB more. "-plus" is the -chrome image plus python3/pip, the rtk command filter and an Android reverse-engineering toolchain (jadx, apktool, smali/baksmali, aapt, dexdump, apksigner, zipalign, androguard) - about 400-500 MB more than -chrome, most of it one Java runtime shared by those tools. Pick the smallest one your plugins need; all three behave identically otherwise. Nothing here needs configuration.
+
 UPGRADING FROM ANOTHER IMAGE: point this template at a fresh appdata path first. The container entrypoint must own the state directory, and session logs from a 0.1.5 or older deployment are upgraded irreversibly on first start of 0.1.7.
   </Overview>
   <Category>AI: Tools:</Category>

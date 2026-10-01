@@ -45,6 +45,10 @@ env:
   # Same recipe, one build arg apart: this package ships the base image plus
   # system Chrome, for plugins that drive a real browser over CDP.
   IMAGE_CHROME: ghcr.io/${{ github.repository }}-chrome
+  # The -chrome package plus Python/pip, the rtk binary and an Android
+  # decompilation toolchain. INSTALL_PLUS implies INSTALL_CHROME in the
+  # Dockerfile, so this leg sets the plus arg alone and still gets Chrome.
+  IMAGE_PLUS: ghcr.io/${{ github.repository }}-plus
   REGISTRY: ghcr.io
   # Lowest release this repo publishes; anything older is out of scope.
   MIN_VERSION: '0.1.7-rc.2'
@@ -60,10 +64,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Two hashes, one per package. The base hash is the plain digest of the
+      # Three hashes, one per package. The base hash is the plain digest of the
       # recipe files, so this change alone does not renumber the package that is
-      # already published; the Chrome variant mixes its name in, so the two can
-      # never skip each other's rebuild.
+      # already published; the Chrome and plus variants each mix their own name
+      # in, so no two packages can skip each other's rebuild.
       - name: Compute recipe hash
         id: recipe
         run: |
@@ -71,6 +75,7 @@ jobs:
           # shellcheck disable=SC2086
           echo "base=$(cat $files | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
           echo "chrome=$( { cat $files; echo chrome; } | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
+          echo "plus=$( { cat $files; echo plus; } | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
 
       - name: Plan versions to build
         id: plan
@@ -79,6 +84,7 @@ jobs:
           REBUILD: ${{ inputs.rebuild }}
           RECIPE_BASE: ${{ steps.recipe.outputs.base }}
           RECIPE_CHROME: ${{ steps.recipe.outputs.chrome }}
+          RECIPE_PLUS: ${{ steps.recipe.outputs.plus }}
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -103,14 +109,21 @@ jobs:
           # recipe hash. The label is the source of truth, so a Dockerfile fix
           # reaches versions that were already published.
           #
-          # Both packages are planned from the same version list, one matrix
-          # entry each, so a version cannot end up published for one and missing
-          # for the other.
+          # All three packages are planned from the same version list, one
+          # matrix entry each, so a version cannot end up published for one and
+          # missing for the others.
           entries="[]"
-          for variant in base chrome; do
+          for variant in base chrome plus; do
+            chrome=false
+            plus=false
             case "$variant" in
-              base)   repository="$IMAGE"; recipe="$RECIPE_BASE"; chrome=false ;;
+              base)   repository="$IMAGE"; recipe="$RECIPE_BASE" ;;
               chrome) repository="$IMAGE_CHROME"; recipe="$RECIPE_CHROME"; chrome=true ;;
+              # INSTALL_CHROME stays false on the plus leg: the Dockerfile
+              # derives Chrome from INSTALL_PLUS, so the two are never both
+              # set. Each arg is passed from its own matrix field, because a
+              # leg that relied on the default would build the base image.
+              plus)   repository="$IMAGE_PLUS"; recipe="$RECIPE_PLUS"; plus=true ;;
             esac
             for v in $candidates; do
               reason=""
@@ -125,8 +138,9 @@ jobs:
               if [ -n "$reason" ]; then
                 echo "$repository:$v -> build ($reason)"
                 entries=$(printf '%s' "$entries" | jq -c \
-                  --arg v "$v" --arg r "$recipe" --arg repo "$repository" --argjson chrome "$chrome" \
-                  '. + [{version:$v, recipe:$r, repository:$repo, chrome:$chrome}]')
+                  --arg v "$v" --arg r "$recipe" --arg repo "$repository" \
+                  --argjson chrome "$chrome" --argjson plus "$plus" \
+                  '. + [{version:$v, recipe:$r, repository:$repo, chrome:$chrome, plus:$plus}]')
               else
                 echo "$repository:$v -> up to date"
               fi
@@ -186,6 +200,7 @@ jobs:
             DSH_VERSION=${{ matrix.version }}
             BASE_IMAGE=${{ env.BASE_IMAGE }}
             INSTALL_CHROME=${{ matrix.chrome }}
+            INSTALL_PLUS=${{ matrix.plus }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.dsh-recipe=${{ matrix.recipe }}
@@ -203,12 +218,18 @@ jobs:
       # Smoke test the pushed image in the posture the README documents: a
       # published port, a state volume, and the launch-token gate answering.
       # The Chrome variant adds the checks that decide whether a browser can
-      # start at all, then a real launch under the hardened runtime.
+      # start at all, then a real launch under the hardened runtime; the plus
+      # variant adds Python, rtk and an APK decompiled to Java source.
       - name: Smoke test ${{ matrix.repository }}:${{ matrix.version }}
         env:
           VERSION: ${{ matrix.version }}
           IMAGE_TAG: ${{ matrix.repository }}:${{ matrix.version }}
           CHROME: ${{ matrix.chrome }}
+          PLUS: ${{ matrix.plus }}
+          # jadx's own 9.8 kB test APK, from the pinned release tag. Small on
+          # purpose: the point is that a real APK comes out as Java source, not
+          # that a large one does.
+          APK_URL: https://raw.githubusercontent.com/skylot/jadx/v1.5.6/jadx-cli/src/test/resources/samples/small.apk
         run: |
           set -euo pipefail
           name="smoke-${VERSION//[^a-zA-Z0-9]/-}"
@@ -216,6 +237,11 @@ jobs:
           cleanup() { docker rm -f "$name" "$hardened" >/dev/null 2>&1 || true
                       docker volume rm "${name}-state" "${hardened}-state" >/dev/null 2>&1 || true; }
           trap cleanup EXIT
+
+          # INSTALL_PLUS implies Chrome in the Dockerfile, so the browser checks
+          # are selected by either arg rather than by CHROME alone.
+          browser=false
+          if [ "$CHROME" = "true" ] || [ "$PLUS" = "true" ]; then browser=true; fi
 
           docker run -d --name "$name" -p 127.0.0.1:3080:3080 \
             -v "${name}-state:/home/node/.dsh" "$IMAGE_TAG"
@@ -253,8 +279,11 @@ jobs:
           # A browser is only shippable from here if it starts under the
           # hardened runtime, so these run in order: the three checks that
           # decide whether Chrome can start at all, then a real launch in the
-          # documented posture, with the flags the plugin passes.
-          if [ "$CHROME" = "true" ]; then
+          # documented posture, with the flags the plugin passes. Selected by
+          # $browser, not $CHROME: the plus leg installs Chrome too, and the
+          # else branch below asserts Chrome is ABSENT, so testing $CHROME here
+          # would send the plus image into the base package's checks.
+          if [ "$browser" = "true" ]; then
             chrome_version=$(docker exec "$name" google-chrome-stable --version)
             echo "chrome: $chrome_version"
             printf '%s' "$chrome_version" | grep -qi 'Google Chrome'
@@ -321,6 +350,24 @@ jobs:
               echo "::error::Chrome aborted under the hardened runtime"
               exit 1
             fi
+
+            # ...and the plus toolchain under the same posture, as the runtime
+            # uid. A JVM start and a Python import both need a writable /tmp
+            # and a writable HOME, which is precisely what this posture
+            # narrows; if either failed here the tool would be useless in the
+            # deployment the README documents.
+            if [ "$PLUS" = "true" ]; then
+              docker exec -u 1000:1000 "$hardened" jadx --version
+              docker exec -u 1000:1000 "$hardened" rtk --version
+              docker exec -u 1000:1000 "$hardened" python3 -c 'import androguard'
+              # Proves the PEP 668 override reaches the runtime, not just the
+              # build: pip 23.0.1 runs its externally-managed check on
+              # `--dry-run` (only --root/--target/--prefix and --dry-run with
+              # --report skip it), so this aborts if the env var went missing.
+              # `idna` is already installed, so it resolves offline.
+              docker exec -u 1000:1000 "$hardened" \
+                python3 -m pip install --dry-run --no-cache-dir idna
+            fi
           else
             # The base package is the one that promises no browser stack, so a
             # stray Chrome would change its size and its attack surface unseen.
@@ -328,6 +375,70 @@ jobs:
             # pass when the exec itself failed.
             docker exec "$name" test ! -e /usr/bin/google-chrome-stable
             docker exec "$name" test ! -d /opt/google/chrome
+          fi
+
+          # --- plus variant ---------------------------------------------------
+          # Every tool is asserted by running it or by resolving it on PATH,
+          # never by its file merely existing. The Debian android packages
+          # install into /usr/lib/android-sdk/build-tools/debian/, so a missing
+          # PATH entry is exactly the failure mode this image has to rule out,
+          # and it is invisible to a file-existence check.
+          if [ "$PLUS" = "true" ]; then
+            docker exec "$name" python3 --version
+            docker exec "$name" python3 -m pip --version
+            # An import, not a pip list line: it is the strongest cheap proof
+            # that the preinstalled analysis stack is actually importable.
+            docker exec "$name" python3 -c 'import androguard; print(androguard.__version__)'
+
+            # rtk's plugin contract, as measured on 0.50.0: a rewritable
+            # command exits 3 with the rewritten command on stdout, while a
+            # command rtk has no equivalent for exits 1 and prints nothing. The
+            # plugin keys off exactly that, and its own --help says "exits 0",
+            # so the code is asserted rather than assumed.
+            docker exec "$name" sh -c 'out=$(rtk rewrite "cat /etc/hostname"); rc=$?
+              test "$rc" = 3 || { echo "rtk rewrite exit: $rc"; exit 1; }
+              echo "$out"' | grep -qx 'rtk read /etc/hostname'
+            docker exec "$name" sh -c 'rtk rewrite "echo x" >/dev/null; test $? = 1'
+
+            for tool in jadx apktool aapt aapt2 dexdump apksigner zipalign \
+                        smali baksmali enjarify; do
+              docker exec "$name" sh -c "command -v $tool >/dev/null" \
+                || { echo "::error::$tool is not on PATH in the plus image"; exit 1; }
+            done
+            docker exec "$name" jadx --version
+            docker exec "$name" apktool --version
+
+            # The reason the image exists: a real APK in, readable source out.
+            # jadx for Java, apktool for the smali/resource tree that can be
+            # rebuilt. Both run over the same fixture, fetched once.
+            docker exec "$name" sh -c "curl -fsSL -o /tmp/small.apk '$APK_URL'"
+
+            # apktool cannot resolve a single resource without its framework,
+            # and the image redirects XDG_DATA_HOME into the state volume, so
+            # the entrypoint links the framework there. This asserts the link
+            # rather than trusting it.
+            docker exec "$name" test -L /home/node/.dsh/share/apktool/framework/1.apk
+
+            docker exec "$name" sh -c 'jadx -d /tmp/jadxout /tmp/small.apk >/dev/null
+              && grep -q "class MainActivity" \
+                 /tmp/jadxout/sources/io/github/skylot/android/smallapp/MainActivity.java'
+            docker exec "$name" sh -c 'apktool d -f -o /tmp/apktool-out /tmp/small.apk >/dev/null
+              && test -f /tmp/apktool-out/AndroidManifest.xml
+              && test -f /tmp/apktool-out/apktool.yml
+              && grep -q "MainActivity" \
+                 /tmp/apktool-out/smali/io/github/skylot/android/smallapp/MainActivity.smali'
+          fi
+
+          # The base and -chrome packages promise none of the -plus payload, so
+          # a layer that leaked it would change their size and their attack
+          # surface unseen. Same positive-`test` rule as the browser check above.
+          if [ "$PLUS" != "true" ]; then
+            docker exec "$name" test ! -e /usr/local/bin/rtk
+            docker exec "$name" test ! -e /opt/jadx
+            docker exec "$name" test ! -e /usr/bin/apktool
+            docker exec "$name" test ! -e /usr/bin/smali
+            docker exec "$name" sh -c '! command -v python3'
+            docker exec "$name" test ! -e /usr/share/android-framework-res
           fi
 
   latest:
@@ -349,14 +460,14 @@ jobs:
       # because it was already up to date — the matrix alone would be wrong,
       # since it lists only what needed building.
       #
-      # Both packages, one line each: they are published in lockstep, so leaving
-      # the Chrome variant behind would pin it to a version the base moved off.
+      # All three packages, one line each: they are published in lockstep, so
+      # leaving a variant behind would pin it to a version the base moved off.
       - name: Retag :latest
         env:
           NEWEST: ${{ needs.plan.outputs.newest }}
         run: |
           set -euo pipefail
-          for repository in "$IMAGE" "$IMAGE_CHROME"; do
+          for repository in "$IMAGE" "$IMAGE_CHROME" "$IMAGE_PLUS"; do
             echo "$repository:latest -> $NEWEST"
             docker buildx imagetools create -t "$repository:latest" "$repository:$NEWEST"
           done

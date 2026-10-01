@@ -94,7 +94,7 @@ requests, so it is not optional.
 | `DSH_WORKSPACE_DIR` | `/workspace` | Directory chowned at start |
 | `DSH_BIND` / `DSH_PORT` | `0.0.0.0` / `3080` | Host side of the published port |
 | `DSH_WORKSPACE` | `./workspace` | Host path mounted at `/workspace` |
-| `DSH_IMAGE` | `ghcr.io/prv-ctech/deepseek-harness:latest` | Image Compose runs; set the `-chrome` tag for the Chrome variant |
+| `DSH_IMAGE` | `ghcr.io/prv-ctech/deepseek-harness:latest` | Image Compose runs; set the `-chrome` tag for the Chrome variant, `-plus` for the toolchain variant |
 
 ### The sandbox
 
@@ -182,6 +182,135 @@ On Unraid, set *Repository* to `ghcr.io/prv-ctech/deepseek-harness-chrome:latest
   Chrome means rebuilding the image. That is deliberate: one artefact, one
   Chrome, no per-deployment browser download.
 
+## The `-plus` image
+
+`ghcr.io/prv-ctech/deepseek-harness-plus` is **the `-chrome` image plus one
+layer**. `INSTALL_PLUS=true` implies `INSTALL_CHROME=true` by reading both
+arguments in the same condition, so the browser is not installed twice and the
+two variants cannot drift into shipping different ones. Same entrypoint, same
+patch, same hardening, same ports, same state volume — switching is one
+variable:
+
+```sh
+DSH_IMAGE=ghcr.io/prv-ctech/deepseek-harness-plus:latest docker compose up -d
+```
+
+On Unraid, set *Repository* to `ghcr.io/prv-ctech/deepseek-harness-plus:latest`.
+
+It exists for one reason: **plugins and tasks can detect these tools instead of
+downloading them into the state volume on every deployment**, which is the same
+argument the `-chrome` image makes about a browser. Three additions:
+
+### Python
+
+`python3` 3.11, `pip` 23.0, `python3-venv` and `python3-dev`. Plugins are npm
+packages, but nearly everything they shell out to — analysis scripts, a
+decompiler's helper, a format converter — is Python, and the usual failure mode
+in the base image is exactly this: a plugin that probes for `python3`, finds
+nothing, and degrades.
+
+Two constraints are real, so read this before you `pip install` something:
+
+- **Debian's Python is PEP 668 externally-managed**, so a plain `pip install`
+  is refused. The image sets `PIP_BREAK_SYSTEM_PACKAGES=1`, which is what makes
+  the agent's own `pip install` calls work at all. It is the only environment
+  variable the variant adds, and it is inert in the base and `-chrome` images,
+  which ship no pip.
+- **The sandbox still decides where a package can land.** Under the default
+  `workspace-write` posture, Landlock grants writes only under `/workspace` and
+  `/tmp`, so a system-wide install into
+  `/usr/local/lib/python3.11/dist-packages` cannot succeed from inside a tool
+  call. `pip install --user` is the install that works from in there, and it
+  lands under `$HOME`, which is the state volume. Anything that must outlive a
+  session should be preinstalled — which is why `androguard` is baked in.
+
+### rtk
+
+[rtk](https://github.com/rtk-ai/rtk) is a single static Rust binary that
+rewrites a command and filters its output, cutting 60–90% off the token cost of
+common dev commands. `rtk` v0.50.0 is installed at `/usr/local/bin/rtk`, from
+the release's **musl tarball** with its sha256 pinned in the Dockerfile — not
+from the `.deb` the same release publishes, which declares `libc6 (>= 2.39)`
+while bookworm ships 2.36 and would fail the build.
+
+The contract plugins depend on is `rtk rewrite "<command>"`: exit **3** with
+the rewritten command on stdout when there is an equivalent, exit **1** with
+nothing when there is not. The smoke test asserts both, because rtk's own
+`--help` says it "exits 0" and that is not what it does.
+
+> **`dsh-pwsh-rtk-rewrite` does not activate on this image.** That plugin
+> replaces the **PowerShell** executor, and its own `cordis.patch.yml` disables
+> it on non-Windows (`disabled: !!js process.platform !== 'win32'`), so on Linux
+> it is a deliberate no-op rather than a broken install. What the image
+> guarantees is the other half: `rtk` is on `PATH` for the agent and for any
+> plugin that probes for it, so `rtk read`, `rtk grep`, `rtk ls` and `rtk git …`
+> work from a shell call today, and a bash-executor rewrite plugin would work
+> against them unchanged.
+
+### Android reverse engineering
+
+Decompile an APK, read what is inside it, rebuild and resign it:
+
+| Tool | What it does |
+| --- | --- |
+| `jadx` 1.5.6 | DEX → readable Java sources; the main tool for "what does this app do" |
+| `apktool` 2.7.0 | resources, manifest and smali, plus `apktool b` to rebuild an APK |
+| `smali` / `baksmali` 2.5.2 | DEX ↔ smali round trip, for when jadx's output is not enough |
+| `enjarify` 1.0.3 | DEX → `.jar`, in pure Python — bookworm packages no `dex2jar` |
+| `aapt`, `aapt2` | dump the manifest, badging and the resource table |
+| `dexdump` | disassemble a raw `.dex` with no APK around it |
+| `apksigner`, `zipalign` | sign and align a rebuilt APK |
+| `androguard` 4.1.4 | scriptable APK/DEX analysis: manifest, certificates, classes, strings |
+
+```sh
+jadx -d out/ app.apk          # Java sources
+apktool d -f app.apk          # manifest, res/, smali/
+apktool b dist/               # rebuild → dist/app/dist/app.apk
+zipalign -p 4 in.apk out.apk && apksigner sign --ks key.jks out.apk
+androguard axml app.apk       # manifest as XML
+```
+
+Three things about this set are not obvious, and each was verified against a
+real APK rather than assumed:
+
+- **Debian puts the build tools off `PATH`.** `aapt`, `aapt2`, `dexdump`,
+  `apksigner` and `zipalign` install to
+  `/usr/lib/android-sdk/build-tools/debian/` with no `/usr/bin` entry and no
+  `update-alternatives`. The image symlinks them into `/usr/local/bin`; without
+  that they exist and cannot be run.
+- **apktool needs its framework, and this image's `XDG_DATA_HOME` breaks it.**
+  apktool 2.7 reads its framework from `$XDG_DATA_HOME/apktool/framework`, but
+  Debian's `apktool` package links it into `~/.local/share/…`. This image points
+  `XDG_DATA_HOME` at the state volume, so with no help apktool creates a
+  **zero-byte** `1.apk` and then dies with `Could not load resources.arsc`. The
+  entrypoint creates the link at the path apktool actually reads, and warns
+  instead of failing when the state directory is not writable.
+- **One JRE serves all of them.** `openjdk-17-jre-headless` (188 MB installed)
+  is what jadx, apktool, smali and apksigner run on. jadx's upstream launcher
+  is installed unmodified — its default JVM flags are accepted by Java 17.
+
+`androguard` is preinstalled on purpose: it is the only tool here that answers
+structured questions about an APK from a script, and a runtime `pip install` of
+it could not work under the default sandbox anyway (see Python above).
+
+**What this variant is not**: it is not the Android SDK. There is no `adb`, no
+Gradle, no platform or NDK, and no `d8`/`dx` — bookworm packages none of them —
+so this is a decompile/read/rebuild toolchain, not a place to build an app from
+source.
+
+**Cost**: roughly 400–500 MB over the `-chrome` image — the JRE (188 MB),
+jadx (~80 MB), `android-framework-res` (~45 MB), Python, androguard's
+dependency tree, and the Java libraries apktool pulls.
+
+**The hardened runtime is unchanged.** Every one of these tools reads the APK and
+writes under `$HOME` or the workspace; nothing execs from `/tmp`, so
+`--read-only`, `--cap-drop ALL`, `no-new-privileges` and a `noexec /tmp` all
+keep working. The smoke test runs jadx, rtk, androguard and a
+`pip install --dry-run` as the unprivileged `PUID` under exactly those flags.
+The one claim *not* exercised there is a full `apktool d` decode inside the
+hardened container: its framework link is asserted directly instead, and the
+JVM and Python checks already cover that posture.
+
 ## Running it other ways
 
 **Rootless / explicit user** — the image pre-creates `/home/node/.dsh` and
@@ -250,18 +379,21 @@ reaches versions that were already published. `:latest` follows the newest
 tracked RC and is moved by copying the manifest that already passed the smoke
 test.
 
-Images are `linux/amd64` and published as two packages —
-`ghcr.io/prv-ctech/deepseek-harness` and
-`ghcr.io/prv-ctech/deepseek-harness-chrome`. Both come from the same Dockerfile;
-the Chrome one is the same build with `--build-arg INSTALL_CHROME=true`, and each
-package carries its own recipe label, so neither can mask a rebuild of the other.
+Images are `linux/amd64` and published as three packages —
+`ghcr.io/prv-ctech/deepseek-harness`,
+`ghcr.io/prv-ctech/deepseek-harness-chrome` and
+`ghcr.io/prv-ctech/deepseek-harness-plus`. All three come from the same
+Dockerfile: the Chrome one is the same build with
+`--build-arg INSTALL_CHROME=true`, the `-plus` one adds
+`INSTALL_PLUS=true` (which implies Chrome), and each package carries its own
+recipe label, so none of them can mask a rebuild of another.
 
 The Docker build can copy only `Dockerfile`, `docker-entrypoint.sh`,
 `proxy.patch.yml`, and `fix/owns-host.mjs` from its context. Local `.env` files,
 credentials, runtime state, and research notes are excluded by `.dockerignore`.
 
 ```sh
-# build locally (add INSTALL_CHROME=true for the -chrome variant)
+# build locally (INSTALL_CHROME=true for -chrome, INSTALL_PLUS=true for -plus)
 docker build --build-arg DSH_VERSION=0.1.7-rc.2 -t dsh .
 
 # pin an exact release
@@ -272,9 +404,11 @@ docker run -d -p 3080:3080 -v dsh-state:/home/node/.dsh \
 ## Layout
 
 ```
-Dockerfile              image build; the base package, and the -chrome variant
-                        when built with INSTALL_CHROME=true
-docker-entrypoint.sh    ownership + PUID/PGID drop, then exec dsh
+Dockerfile              image build; the base package, the -chrome variant when
+                        built with INSTALL_CHROME=true, and the -plus variant
+                        when built with INSTALL_PLUS=true
+docker-entrypoint.sh    ownership + PUID/PGID drop, apktool's framework link,
+                        then exec dsh
 proxy.patch.yml         the launch layer: 0.0.0.0 bind, plugin insert
 fix/owns-host.mjs       restores remote Settings, prints the public URL
 compose.yaml            reference deployment behind Pangolin
@@ -286,8 +420,10 @@ docs/research/          audits of upstream 0.1.7-rc.2 and three related repos
 ## Upgrading upstream
 
 Nothing to merge. When a new RC is published the workflow builds, smoke-tests
-(version equality, PID-1/uid drop, the launch-token gate, and — for the `-chrome`
-package — a real headless launch under the hardened flags) and pushes it. The
+(version equality, PID-1/uid drop, the launch-token gate, a real headless
+launch under the hardened flags for `-chrome` and `-plus`, and — for `-plus` —
+Python, rtk's rewrite contract, every Android tool on `PATH`, and a real jadx
+and apktool decode of a real APK) and pushes it. The
 seams this repo uses are upstream's own, so they move with it. The one thing to
 re-check on a major release is the `webserver` row's config keys: a patch layer
 replaces that row's whole config, and a key upstream adds must be restated in
