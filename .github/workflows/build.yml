@@ -443,7 +443,20 @@ jobs:
 
   latest:
     needs: [plan, build]
-    if: needs.plan.outputs.has_work == 'true'
+    # `always()`, and NOT gated on has_work. Two reasons, both learned the hard
+    # way:
+    #
+    #   * A red run must not withhold a good tag from the packages that are
+    #     fine. A failed leg never published its version tag, so the retag step
+    #     skips that repository by name instead of the whole job dying on the
+    #     first missing source.
+    #   * has_work goes false once every package is built — and a variant whose
+    #     build pushed but whose smoke test failed is exactly that state. Gating
+    #     on has_work would mean its :latest could never be created at all, by
+    #     any future run, because nothing would ever need rebuilding again. The
+    #     retag is idempotent (it compares digests first), so running it every
+    #     time is safe and is the only way a lagging tag ever catches up.
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.newest != ''
     runs-on: ubuntu-latest
     steps:
       - uses: docker/login-action@v3
@@ -462,12 +475,46 @@ jobs:
       #
       # All three packages, one line each: they are published in lockstep, so
       # leaving a variant behind would pin it to a version the base moved off.
+      #
+      # Per repository, and idempotent, so it is safe on every run rather than
+      # only on one that had work to do. A leg that failed never published its
+      # version tag, so the missing source is skipped by name instead of killing
+      # the loop and leaving the packages that DID build on a stale :latest.
+      # And a tag already sitting on the right digest is left alone, so a run
+      # with nothing to move stays quiet.
       - name: Retag :latest
         env:
           NEWEST: ${{ needs.plan.outputs.newest }}
         run: |
           set -euo pipefail
+          moved=0; unchanged=()
           for repository in "$IMAGE" "$IMAGE_CHROME" "$IMAGE_PLUS"; do
-            echo "$repository:latest -> $NEWEST"
+            # The source must already be a digest that passed its smoke test.
+            # `imagetools inspect` is the check: non-zero means this repository
+            # has no such version, which can only be a failed build leg.
+            if ! source_digest=$(docker buildx imagetools inspect "$repository:$NEWEST" \
+                 --format '{{.Manifest.Digest}}' 2>/dev/null) || [ -z "$source_digest" ]; then
+              unchanged+=("$repository")
+              echo "::warning::$repository:$NEWEST was not published, so its :latest is unchanged"
+              continue
+            fi
+            # Best effort only, and deliberately unable to block a correct
+            # retag: if this buildx cannot render the field, both digests come
+            # back empty, they compare unequal, and the retag happens — the
+            # same as before this check existed.
+            current_digest=$(docker buildx imagetools inspect "$repository:latest" \
+              --format '{{.Manifest.Digest}}' 2>/dev/null || true)
+            if [ -n "$current_digest" ] && [ "$current_digest" = "$source_digest" ]; then
+              echo "$repository:latest already at $NEWEST"
+              continue
+            fi
+            echo "$repository:latest -> $NEWEST ($source_digest)"
             docker buildx imagetools create -t "$repository:latest" "$repository:$NEWEST"
+            moved=$((moved + 1))
           done
+          # A skip is not a failure of this job — the build leg that caused it
+          # has already failed loudly, and re-pointing :latest at an older
+          # version that nobody asked for would be a worse default than a
+          # stale tag that is reported here.
+          echo "moved $moved of 3"
+          [ "${#unchanged[@]}" -eq 0 ] || echo "::warning::unchanged: ${unchanged[*]}"
