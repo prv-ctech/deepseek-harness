@@ -27,16 +27,16 @@ SANDBOX: dsh runs untrusted commands confined to the Workspace path. The confine
 
 WHAT THE AGENT CAN REACH: the Workspace mount, and anything else you mount into it. Only mount data you are willing to let an AI read and modify.
 
-VERSIONS: :latest follows the newest upstream release candidate. Every upstream version also gets its own tag (e.g. 0.1.7-rc.2) which you can pin in Repository instead. dsh is a developer preview with breaking changes between releases - 0.1.7 migrated session logs to a format that cannot be downgraded - so consider LEAVING AUTO-UPDATE OFF, backing up appdata first, and reading the release notes before updating.
+VERSIONS: :latest follows the newest upstream release candidate (tracked from 0.2.0-rc.2 on). Every version we ship also gets its own tag (e.g. 0.2.0-rc.2) which you can pin in Repository instead. dsh is a developer preview with breaking changes between releases - 0.1.7 migrated session logs to a format that cannot be downgraded - so consider LEAVING AUTO-UPDATE OFF, backing up appdata first, and reading the release notes before updating.
 
-IMAGE VARIANTS: the Repository above pulls the plain image. To change variant, edit Repository and Update. "-chrome" adds a real system Chrome at /usr/bin/google-chrome-stable for plugins that drive a browser (dsh-realbrowser) - about 300-400 MB more. "-plus" is the -chrome image plus python3/pip, the rtk command filter and an Android reverse-engineering toolchain (jadx, apktool, smali/baksmali, aapt, dexdump, apksigner, zipalign, androguard) - about 400-500 MB more than -chrome, most of it one Java runtime shared by those tools. Pick the smallest one your plugins need; all three behave identically otherwise. Nothing here needs configuration.
+IMAGE VARIANTS: the Repository above pulls the plain image. To change variant, edit Repository and Update. "-plus" adds a real system Chrome at /usr/bin/google-chrome-stable for plugins that drive a browser (dsh-realbrowser), python3/pip, the rtk command filter, the codebase-memory-mcp binary behind the code intelligence MCP server, and an Android reverse-engineering toolchain (jadx, apktool, smali/baksmali, aapt, dexdump, apksigner, zipalign, androguard) - roughly 1 GB more, most of it Chrome, one Java runtime shared by those tools, and the MCP server binary. Both variants behave identically otherwise. Nothing here needs configuration.
 
 UPGRADING FROM ANOTHER IMAGE: point this template at a fresh appdata path first. The container entrypoint must own the state directory, and session logs from a 0.1.5 or older deployment are upgraded irreversibly on first start of 0.1.7.
   </Overview>
   <Category>AI: Tools:</Category>
   <WebUI>http://[IP]:[PORT:3080]</WebUI>
   <TemplateURL/>
-  <Icon>https://raw.githubusercontent.com/deepseek-ai/deepseek-harness/dsh-v0.1.7-rc.2/apps/desktop/resources/icon.png</Icon>
+  <Icon>https://raw.githubusercontent.com/deepseek-ai/deepseek-harness/dsh-v0.2.0-rc.2/apps/desktop/resources/icon.png</Icon>
   <ExtraParams/>
   <PostArgs>web</PostArgs>
   <Config Name="WebUI Port" Target="3080" Default="3080" Mode="tcp" Description="The dsh web interface. Reachable by anything that can route to this Unraid box, so treat the port as trusted-LAN only. Change the host port only if 3080 is taken." Type="Port" Display="always" Required="true" Mask="false">3080</Config>

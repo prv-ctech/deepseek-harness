@@ -41,3 +41,8 @@ credentials*.json
 *.key
 *.p12
 *.pfx
+
+# Codebase-memory dataset (per-workspace .codebase-memory/): graph.db.zst is
+# rewritten on every index, so committing it turns one path into unbounded git
+# history. It stays local — add it deliberately if a workspace should share it.
+.codebase-memory/

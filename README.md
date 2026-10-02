@@ -94,7 +94,7 @@ requests, so it is not optional.
 | `DSH_WORKSPACE_DIR` | `/workspace` | Directory chowned at start |
 | `DSH_BIND` / `DSH_PORT` | `0.0.0.0` / `3080` | Host side of the published port |
 | `DSH_WORKSPACE` | `./workspace` | Host path mounted at `/workspace` |
-| `DSH_IMAGE` | `ghcr.io/prv-ctech/deepseek-harness:latest` | Image Compose runs; set the `-chrome` tag for the Chrome variant, `-plus` for the toolchain variant |
+| `DSH_IMAGE` | `ghcr.io/prv-ctech/deepseek-harness:latest` | Image Compose runs; set the `-plus` tag for the browser + toolchain variant |
 
 ### The sandbox
 
@@ -132,29 +132,35 @@ On a hardened `--tmpfs /tmp:noexec` container that fails with
 starts. `NARB_NATIVE_CACHE_DIR=/home/node/.dsh/cache/native` is baked in for this
 reason — it points the cache at a real filesystem so you can keep `noexec /tmp`.
 
-## The `-chrome` image
+## The `-plus` image
 
-`ghcr.io/prv-ctech/deepseek-harness-chrome` is this image plus Google Chrome,
-installed at the system level from Google's apt repository
+`ghcr.io/prv-ctech/deepseek-harness-plus` is **the base image plus two layers**:
+a real browser, and the toolchain a plugin, a task or the MCP configuration can
+discover instead of downloading into the state volume on every deployment.
+`INSTALL_PLUS=true` selects both layers, so they cannot drift apart. Same
+entrypoint, same patch, same hardening, same ports, same state volume —
+switching is one variable:
+
+```sh
+DSH_IMAGE=ghcr.io/prv-ctech/deepseek-harness-plus:latest docker compose up -d
+```
+
+On Unraid, set *Repository* to `ghcr.io/prv-ctech/deepseek-harness-plus:latest`.
+
+### A real browser
+
+Google Chrome at the system level, from Google's apt repository
 (`/usr/bin/google-chrome-stable`). It exists because a plugin that drives a real
 browser — `dsh-realbrowser`, or anything else that speaks CDP — otherwise
 downloads a browser into the state volume, and that copy cannot run here: the
 base image ships neither Chrome's shared libraries nor any font, so it fails at
 `ldd` and aborts on its first page.
 
-Everything else is identical: same entrypoint, same patch layer, same hardening,
-same ports, same state volume. Switching is one variable:
-
-```sh
-DSH_IMAGE=ghcr.io/prv-ctech/deepseek-harness-chrome:latest docker compose up -d
-```
-
-On Unraid, set *Repository* to `ghcr.io/prv-ctech/deepseek-harness-chrome:latest`.
-
 - **The image copy wins the lookup.** The plugin resolves
   `google-chrome-stable` by name from `PATH` before it considers a downloaded
   one, so `/usr/bin/google-chrome-stable` is used and the volume store becomes a
-  fallback only.
+  fallback only. The Chrome version therefore follows the image build —
+  deliberate: one artefact, one Chrome, no per-deployment browser download.
 - **No browser flags are added by this image.** The entrypoint passes none; the
   plugin already passes `--no-sandbox --disable-dev-shm-usage --no-first-run
   --no-default-browser-check`, plus `--remote-debugging-port` and a
@@ -176,30 +182,12 @@ On Unraid, set *Repository* to `ghcr.io/prv-ctech/deepseek-harness-chrome:latest
   family fontconfig's own `latin.conf` prefers. The smoke test asserts one
   coverage per package — `fc-list :lang=ja`, `:lang=ar`, `:charset=1f600` — so
   dropping a font package fails the build, not the user's page.
-- **Cost and ownership**: Chrome adds roughly 150–250 MB and the font set about
-  145 MB more (~89 MB of that `fonts-noto-cjk`), so budget roughly 300–400 MB
-  over the base image. The Chrome version follows the image build, so upgrading
-  Chrome means rebuilding the image. That is deliberate: one artefact, one
-  Chrome, no per-deployment browser download.
-
-## The `-plus` image
-
-`ghcr.io/prv-ctech/deepseek-harness-plus` is **the `-chrome` image plus one
-layer**. `INSTALL_PLUS=true` implies `INSTALL_CHROME=true` by reading both
-arguments in the same condition, so the browser is not installed twice and the
-two variants cannot drift into shipping different ones. Same entrypoint, same
-patch, same hardening, same ports, same state volume — switching is one
-variable:
-
-```sh
-DSH_IMAGE=ghcr.io/prv-ctech/deepseek-harness-plus:latest docker compose up -d
-```
-
-On Unraid, set *Repository* to `ghcr.io/prv-ctech/deepseek-harness-plus:latest`.
+- **Cost**: Chrome adds roughly 150–250 MB and the font set about 145 MB more
+  (~89 MB of that `fonts-noto-cjk`).
 
 It exists for one reason: **plugins and tasks can detect these tools instead of
-downloading them into the state volume on every deployment**, which is the same
-argument the `-chrome` image makes about a browser. Three additions:
+downloading them into the state volume on every deployment**. Five additions —
+the browser above, and:
 
 ### Python
 
@@ -213,9 +201,9 @@ Two constraints are real, so read this before you `pip install` something:
 
 - **Debian's Python is PEP 668 externally-managed**, so a plain `pip install`
   is refused. The image sets `PIP_BREAK_SYSTEM_PACKAGES=1`, which is what makes
-  the agent's own `pip install` calls work at all. It is the only environment
-  variable the variant adds, and it is inert in the base and `-chrome` images,
-  which ship no pip.
+  the agent's own `pip install` calls work at all. It is one of the two
+  environment variables the variant adds, and it is inert in the base image,
+  which ships no pip.
 - **The sandbox still decides where a package can land.** Under the default
   `workspace-write` posture, Landlock grants writes only under `/workspace` and
   `/tmp`, so a system-wide install into
@@ -298,18 +286,84 @@ Gradle, no platform or NDK, and no `d8`/`dx` — bookworm packages none of them 
 so this is a decompile/read/rebuild toolchain, not a place to build an app from
 source.
 
-**Cost**: roughly 400–500 MB over the `-chrome` image — the JRE (188 MB),
-jadx (~80 MB), `android-framework-res` (~45 MB), Python, androguard's
-dependency tree, and the Java libraries apktool pulls.
+### codebase-memory-mcp
+
+[codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) is a code
+intelligence MCP server: it full-indexes a repository into a persistent
+knowledge graph — functions, classes, call chains, routes — and answers
+structural questions over it through 17 MCP tools, instead of the agent
+grep-reading its way through the tree. v0.11.0 lives at
+`/usr/local/bin/codebase-memory-mcp`, with
+`/home/node/.local/bin/codebase-memory-mcp` symlinked to it — the path the MCP
+configuration runs, and the path it can keep forever:
+
+```json
+{ "serverName": "codebase-memory", "transport": "stdio",
+  "command": "/home/node/.local/bin/codebase-memory-mcp", "args": [] }
+```
+
+So that entry resolves on a fresh container with no install step, no
+`curl | bash` and no download into the state volume. Bare invocation *is* the
+MCP stdio server; `codebase-memory-mcp --version` and
+`codebase-memory-mcp cli <tool> …` are the local one-shot checks.
+
+**What survives what** — "ready to go after a restart or an update" is the
+point of shipping it here, so it is worth being explicit:
+
+| | Where | Survives restart, recreation, image update |
+| --- | --- | --- |
+| the binary | image layer (`/usr/local/bin`, version + sha256 pinned at build) | yes — every deploy redeploys it |
+| the MCP entry | state volume (`$DSH_HOME/cordis.patch.yml`) | yes |
+| indexes, config db, daemon logs | state volume (`CBM_CACHE_DIR`, below) | yes |
+| `--persistence` export | workspace (`./.codebase-memory/graph.db.zst`) | yes — the workspace is a volume |
+
+The symlink is not decoration: the MCP entry lives in the state volume and
+outlives image updates, so an older row naming
+`/home/node/.local/bin/codebase-memory-mcp` still resolves instead of stranding
+the server on a path the image does not ship. The one thing that can still ask
+for a reindex is bumping `CBM_VERSION` in the Dockerfile — a tool upgrade, not a
+restart.
+
+Three things about the install are not obvious:
+
+- **The portable tarball — the fully static build** (`ldd` reports "not a dynamic
+  executable") — not the platform tarball the same release publishes. That one
+  is linked against its builder's glibc; the static one runs regardless, which
+  is the same reason rtk comes from its musl tarball. The sha256 is pinned in
+  the Dockerfile from the release's own `checksums.txt`.
+- **Installed byte-for-byte as upstream publishes it.** The binary is unstripped
+  (~286 MB on disk) and stays that way, so the release's checksums and
+  attestations still describe exactly what runs.
+- **`CBM_CACHE_DIR` points into the state volume**
+  (`/home/node/.dsh/cache/codebase-memory-mcp`). The tool's cache root defaults
+  to `~/.cache/codebase-memory-mcp` and, unlike its config path (which honours
+  `$XDG_CONFIG_HOME`), it ignores `$XDG_CACHE_HOME` — verified, it creates
+  `~/.cache/…` even when the variable points elsewhere. Left at the default the
+  indexes land in the image layer: unwritable under `--read-only`, and not even
+  creatable when `PUID` does not own `/home/node` (Unraid's `99:100`). Redirected
+  they are writable by whoever the entrypoint chowns the state volume for, and
+  they survive a container upgrade — and with the redirect set the tool writes
+  nothing under `$HOME` at all (verified), so nothing it needs is left in the
+  image layer. A repo-level `--persistence` writes `.codebase-memory/graph.db.zst`
+  into the workspace instead, which is inside the sandbox's writable roots
+  anyway.
+
+**Cost**: roughly 1 GB over the base image — Chrome plus fonts (~300–400 MB),
+the JRE (188 MB), `codebase-memory-mcp` (286 MB), jadx (~80 MB),
+`android-framework-res` (~45 MB), Python, androguard's dependency tree, and the
+Java libraries apktool pulls.
 
 **The hardened runtime is unchanged.** Every one of these tools reads the APK and
 writes under `$HOME` or the workspace; nothing execs from `/tmp`, so
 `--read-only`, `--cap-drop ALL`, `no-new-privileges` and a `noexec /tmp` all
 keep working. The smoke test runs jadx, rtk, androguard and a
-`pip install --dry-run` as the unprivileged `PUID` under exactly those flags.
-The one claim *not* exercised there is a full `apktool d` decode inside the
-hardened container: its framework link is asserted directly instead, and the
-JVM and Python checks already cover that posture.
+`pip install --dry-run` as the unprivileged `PUID` under exactly those flags, a
+real two-file index through `codebase-memory-mcp` as that same uid (which is
+also what proves the redirected cache root is writable), and `--version` of the
+binary inside the hardened container itself. The one claim *not* exercised there
+is a full `apktool d` decode inside the hardened container: its framework link
+is asserted directly instead, and the JVM and Python checks already cover that
+posture.
 
 ## Running it other ways
 
@@ -357,7 +411,7 @@ restart**, so a 401 after a restart means: re-read the log line. A 403 means the
 
 ## What this image is not
 
-- **No desktop.** The plain image ships no browser at all; the `-chrome` image
+- **No desktop.** The base image ships no browser at all; the `-plus` image
   ships Chrome and its runtime libraries, but no desktop and no noVNC. The GUI's
   browser view is a CDP screencast, not a virtual desktop.
 - **Not a TLS terminator.** Put it behind a proxy that does TLS.
@@ -366,46 +420,47 @@ restart**, so a 401 after a restart means: re-read the log line. A 403 means the
 
 ## Building and releases
 
-`.github/workflows/build.yml` tracks upstream **release candidates only**,
-starting at `0.1.7-rc.2`. It reads the version list from the npm registry rather
-than the `latest` dist-tag, because those disagree: `0.1.7-rc.2` was published
-while `latest` still resolved to `0.1.5-rc.3`.
+`.github/workflows/build.yml` tracks upstream **release candidates only** — the
+`dsh-v<version>` tags on the releases of
+[deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness),
+from `0.2.0-rc.2` on. Alphas and older lines are out of scope and are never
+built. A release is buildable only once its npm package exists, because the
+image installs `@deepseek-ai/dsh@<version>`; a sweep skips the rest and picks
+them up on a later sweep.
 
-Each RC is built once per recipe. The recipe hash (Dockerfile + entrypoint +
-patch + plugin) is stored in the image label
-`org.opencontainers.image.dsh-recipe`; a schedule run rebuilds a version only
-when its image is missing or carries a stale hash, so improving this repo
-reaches versions that were already published. `:latest` follows the newest
-tracked RC and is moved by copying the manifest that already passed the smoke
-test.
+Each RC is built once per recipe, and nothing is rebuilt without a reason. The
+recipe hash (Dockerfile + entrypoint + patch + plugin) is stored in the image
+label `org.opencontainers.image.dsh-recipe`; a sweep builds a version only when
+its image is missing or carries a stale hash, so improving this repo reaches the
+versions in scope exactly once. The 6-hourly sweep is a scan — with nothing new
+it does not touch the registry. `:latest` follows the newest tracked RC and is
+moved by copying the manifest that already passed the smoke test, and is left
+alone when it already points there. A running container therefore updates only
+when upstream ships a newer RC or the recipe here changes — never on a timer.
 
-Images are `linux/amd64` and published as three packages —
-`ghcr.io/prv-ctech/deepseek-harness`,
-`ghcr.io/prv-ctech/deepseek-harness-chrome` and
-`ghcr.io/prv-ctech/deepseek-harness-plus`. All three come from the same
-Dockerfile: the Chrome one is the same build with
-`--build-arg INSTALL_CHROME=true`, the `-plus` one adds
-`INSTALL_PLUS=true` (which implies Chrome), and each package carries its own
-recipe label, so none of them can mask a rebuild of another.
+Images are `linux/amd64` and published as two packages —
+`ghcr.io/prv-ctech/deepseek-harness` and
+`ghcr.io/prv-ctech/deepseek-harness-plus`. Both come from the same Dockerfile:
+the `-plus` one adds `--build-arg INSTALL_PLUS=true`, and each package carries
+its own recipe label, so neither can mask a rebuild of the other.
 
 The Docker build can copy only `Dockerfile`, `docker-entrypoint.sh`,
 `proxy.patch.yml`, and `fix/owns-host.mjs` from its context. Local `.env` files,
 credentials, runtime state, and research notes are excluded by `.dockerignore`.
 
 ```sh
-# build locally (INSTALL_CHROME=true for -chrome, INSTALL_PLUS=true for -plus)
-docker build --build-arg DSH_VERSION=0.1.7-rc.2 -t dsh .
+# build locally (INSTALL_PLUS=true for -plus)
+docker build --build-arg DSH_VERSION=0.2.0-rc.2 -t dsh .
 
 # pin an exact release
 docker run -d -p 3080:3080 -v dsh-state:/home/node/.dsh \
-  ghcr.io/prv-ctech/deepseek-harness:0.1.7-rc.2
+  ghcr.io/prv-ctech/deepseek-harness:0.2.0-rc.2
 ```
 
 ## Layout
 
 ```
-Dockerfile              image build; the base package, the -chrome variant when
-                        built with INSTALL_CHROME=true, and the -plus variant
+Dockerfile              image build; the base package, and the -plus variant
                         when built with INSTALL_PLUS=true
 docker-entrypoint.sh    ownership + PUID/PGID drop, apktool's framework link,
                         then exec dsh
@@ -413,18 +468,16 @@ proxy.patch.yml         the launch layer: 0.0.0.0 bind, plugin insert
 fix/owns-host.mjs       restores remote Settings, prints the public URL
 compose.yaml            reference deployment behind Pangolin
 scripts/published-recipe.sh   recipe label lookup used by the workflow
-docs/PLAN.md            the research and decisions behind this design
-docs/research/          audits of upstream 0.1.7-rc.2 and three related repos
 ```
 
 ## Upgrading upstream
 
 Nothing to merge. When a new RC is published the workflow builds, smoke-tests
-(version equality, PID-1/uid drop, the launch-token gate, a real headless
-launch under the hardened flags for `-chrome` and `-plus`, and — for `-plus` —
-Python, rtk's rewrite contract, every Android tool on `PATH`, and a real jadx
-and apktool decode of a real APK) and pushes it. The
-seams this repo uses are upstream's own, so they move with it. The one thing to
-re-check on a major release is the `webserver` row's config keys: a patch layer
-replaces that row's whole config, and a key upstream adds must be restated in
-`proxy.patch.yml` or the row fails schema validation at boot.
+(version equality, PID-1/uid drop, the launch-token gate, and — for `-plus` —
+a real headless launch under the hardened flags, Python, rtk's rewrite
+contract, every Android tool on `PATH`, a real jadx and apktool decode of a
+real APK, and a real codebase-memory-mcp index) and pushes it. The seams this
+repo uses are upstream's own, so they move with it. The one thing to re-check
+on a major release is the `webserver` row's config keys: a
+patch layer replaces that row's whole config, and a key upstream adds must be
+restated in `proxy.patch.yml` or the row fails schema validation at boot.

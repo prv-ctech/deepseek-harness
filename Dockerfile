@@ -20,7 +20,7 @@ FROM ${BASE_IMAGE}
 
 # Release to ship. The tracking workflow overrides this with --build-arg; keep
 # the default at the newest RC this repo publishes.
-ARG DSH_VERSION=0.1.7-rc.2
+ARG DSH_VERSION=0.2.0-rc.2
 # `dsh plugin add` and the Plugins settings page shell out to pnpm (resolved
 # through PATH). Without it that page is dead; with it, plugin installs land in
 # the state volume.
@@ -53,9 +53,8 @@ RUN npm install --global --omit=dev --no-audit --no-fund \
 # version this image claims to be.
 RUN test "$(dsh --version)" = "${DSH_VERSION}"
 
-# Optional Chrome variant: the same image plus a system Chrome, published as
-# `deepseek-harness-chrome` (built with --build-arg INSTALL_CHROME=true).
-# Installed from Google's own apt repo, so it is a real package at
+# Browser layer of the "+" variant: a system Chrome, installed from Google's
+# own apt repo, so it is a real package at
 # /usr/bin/google-chrome-stable: dsh-realbrowser's resolver finds a browser by
 # name before any copy it downloads into the state volume, which makes that
 # downloaded copy a fallback only. Chrome's version therefore follows the image
@@ -83,15 +82,9 @@ RUN test "$(dsh --version)" = "${DSH_VERSION}"
 # --read-only, --cap-drop ALL, no-new-privileges and a noexec /tmp all keep
 # working. No browser flag belongs here either — the caller passes --no-sandbox,
 # --disable-dev-shm-usage and the remote-debugging port, not the image.
-ARG INSTALL_CHROME=false
-# Declared HERE, beside INSTALL_CHROME, because the guard on the next line reads
-# it. A build arg is only visible to instructions after its own ARG: declaring
-# INSTALL_PLUS down in the "+" block instead would leave this condition testing
-# an empty string, and the -plus image would silently ship without a browser.
 ARG INSTALL_PLUS=false
-LABEL com.prvctech.dsh.chrome="${INSTALL_CHROME}"
 LABEL com.prvctech.dsh.plus="${INSTALL_PLUS}"
-RUN if [ "$INSTALL_CHROME" = "true" ] || [ "$INSTALL_PLUS" = "true" ]; then \
+RUN if [ "$INSTALL_PLUS" = "true" ]; then \
       set -eux; \
       apt-get update; \
       apt-get install -y --no-install-recommends ca-certificates curl gnupg; \
@@ -110,8 +103,9 @@ RUN if [ "$INSTALL_CHROME" = "true" ] || [ "$INSTALL_PLUS" = "true" ]; then \
     fi
 
 # Optional "+" variant, published as `deepseek-harness-plus` (--build-arg
-# INSTALL_PLUS=true). It is everything the -chrome image is, plus three things a
-# plugin or a task can discover instead of downloading into the state volume:
+# INSTALL_PLUS=true). It is the base image plus the browser layer above and
+# four things a plugin, a task or the MCP configuration can discover instead of
+# downloading into the state volume:
 #
 #   1. Python 3.11 + pip, so a tool that probes for `python3` finds one. Plugins
 #      are npm packages, but everything they shell out to — analysis scripts,
@@ -119,14 +113,17 @@ RUN if [ "$INSTALL_CHROME" = "true" ] || [ "$INSTALL_PLUS" = "true" ]; then \
 #   2. rtk, the token-saving output filter (github.com/rtk-ai/rtk).
 #   3. The Android RE toolchain: jadx, apktool, smali/baksmali, enjarify, aapt,
 #      dexdump, apksigner, zipalign.
+#   4. codebase-memory-mcp (github.com/DeusData/codebase-memory-mcp), the code
+#      intelligence MCP server, on PATH and at the path the MCP configuration
+#      runs it from.
 #
-# INSTALL_PLUS=true implies Chrome — the condition above reads both args, so the
-# -plus image is the -chrome image plus this layer and the two cannot drift into
-# shipping different browsers.
+# The browser layer and this layer are one variant: INSTALL_PLUS=true selects
+# both, so they cannot drift apart.
 #
-# Cost: roughly 400–500 MB over the -chrome image. openjdk-17-jre-headless alone
+# Cost: roughly 1 GB over the base image. openjdk-17-jre-headless alone
 # is 188 MB installed, and that JVM is not optional dressing — jadx, apktool,
 # smali and apksigner are all Java, so one shared JRE is cheaper than four.
+# codebase-memory-mcp is another 286 MB on its own.
 #
 # Version pins are ARGs, not hardcoded strings, so a rebuild of an existing DSH
 # release can move them without touching this layer; each pin is restated with
@@ -171,6 +168,22 @@ RUN if [ "$INSTALL_CHROME" = "true" ] || [ "$INSTALL_PLUS" = "true" ]; then \
 # PIP_BREAK_SYSTEM_PACKAGES below, which is what makes the agent's own
 # `pip install --user` calls work.
 #
+# codebase-memory-mcp: the portable tarball — the fully static build (`ldd`
+# reports "not a dynamic executable"), so it runs whatever glibc the base image
+# ships, the same reason rtk comes from its musl tarball. The checksum is the
+# release's own checksums.txt entry for this exact asset. It is installed at
+# /usr/local/bin/codebase-memory-mcp — image-owned, on PATH, and not shadowable
+# by a volume mount or by a $HOME the runtime uid does not own — with
+# /home/node/.local/bin/codebase-memory-mcp symlinked to it. The MCP
+# configuration runs the symlink's path (`command: …, args: []`), and the link
+# is what keeps that row working even if it predates this layout: a config in
+# the state volume outlives image updates, so config/image path drift has to
+# resolve rather than strand the server. Upstream publishes the binary
+# unstripped (~286 MB) and it is installed byte-for-byte as published, so the
+# release's checksums and attestations still describe what runs. CBM_CACHE_DIR
+# below is the one thing this tool needs from the image: its cache root defaults
+# to `~/.cache/codebase-memory-mcp` and ignores XDG_CACHE_HOME.
+#
 # The hardened runtime is unaffected: every one of these tools reads the APK and
 # writes under $HOME or the workspace. Nothing here execs from /tmp, so
 # --read-only, --cap-drop ALL, no-new-privileges and a noexec /tmp all keep
@@ -179,6 +192,8 @@ ARG RTK_VERSION=0.50.0
 ARG RTK_SHA256=bc2b8902b0d9c796c82ef45f16ae2307e17757afeca5ee156235a3dc7bda5f89
 ARG JADX_VERSION=1.5.6
 ARG ANDROGUARD_VERSION=4.1.4
+ARG CBM_VERSION=0.11.0
+ARG CBM_SHA256=1f9e8293eb2bc5c05cfa27a7e8fc033da6d729ffad525ccfcdaa3fd606306683
 RUN if [ "$INSTALL_PLUS" = "true" ]; then \
       set -eux; \
       apt-get update; \
@@ -201,17 +216,25 @@ RUN if [ "$INSTALL_PLUS" = "true" ]; then \
       python3 -m pip install --break-system-packages --no-cache-dir \
         "androguard==${ANDROGUARD_VERSION}"; \
       python3 -c 'import androguard; print(androguard.__version__)'; \
+      mkdir -p /home/node/.local/bin; \
+      curl -fsSLo /tmp/cbm.tar.gz \
+        "https://github.com/DeusData/codebase-memory-mcp/releases/download/v${CBM_VERSION}/codebase-memory-mcp-linux-amd64-portable.tar.gz"; \
+      echo "${CBM_SHA256}  /tmp/cbm.tar.gz" | sha256sum -c -; \
+      tar -xzf /tmp/cbm.tar.gz -C /usr/local/bin codebase-memory-mcp; \
+      chmod 0755 /usr/local/bin/codebase-memory-mcp; \
+      ln -s /usr/local/bin/codebase-memory-mcp /home/node/.local/bin/codebase-memory-mcp; \
+      test "$(/home/node/.local/bin/codebase-memory-mcp --version)" = "codebase-memory-mcp ${CBM_VERSION}"; \
       for tool in aapt aapt2 dexdump apksigner zipalign; do \
         ln -s "/usr/lib/android-sdk/build-tools/debian/${tool}" "/usr/local/bin/${tool}"; \
       done; \
-      rm -f /tmp/rtk.tar.gz /tmp/jadx.zip; \
+      rm -f /tmp/rtk.tar.gz /tmp/jadx.zip /tmp/cbm.tar.gz; \
       rm -rf /var/lib/apt/lists/* /root/.cache; \
     fi
 
 # PIP_BREAK_SYSTEM_PACKAGES is the only concession the -plus toolchain asks for:
 # Debian's Python 3.11 is marked PEP 668 externally-managed, so every `pip
 # install` in this image is refused without it — including the agent's own. It is
-# inert in the base and -chrome images, which ship no pip. Note what it does not
+# inert in the base image, which ships no pip. Note what it does not
 # buy: anything meant to outlive a run still has to write under $HOME (the
 # XDG_CACHE_HOME below) or the workspace, because a system-wide install targets
 # /usr/local/lib/python3.11/dist-packages, which the workspace-write sandbox does
@@ -237,11 +260,23 @@ ENV DSH_VERSION="${DSH_VERSION}" \
 # "Cannot find module .../build/napi/napi-v9-linux-x64-gnu/require_builtin.node"
 # and dsh never boots. Pointing the cache at the state volume (a real
 # filesystem, exec allowed) keeps the noexec /tmp hardening usable.
+#
+# CBM_CACHE_DIR is the same redirection for codebase-memory-mcp in the -plus
+# image, and it is load-bearing for the same class of reason. The tool's cache
+# root defaults to ~/.cache/codebase-memory-mcp and does NOT follow
+# XDG_CACHE_HOME (verified: with XDG_CACHE_HOME pointed elsewhere it still
+# created ~/.cache/codebase-memory-mcp), so left alone the indexes land in the
+# image layer — unwritable under a read-only root filesystem, and not even
+# creatable when the runtime uid does not own /home/node (Unraid's 99:100).
+# Pointed at the state volume they are writable by whoever the entrypoint
+# chowns it for, and they survive a container upgrade. It is inert in the base
+# image, which ships no codebase-memory-mcp.
 ENV XDG_CACHE_HOME=/home/node/.dsh/cache \
     XDG_CONFIG_HOME=/home/node/.dsh/config \
     XDG_DATA_HOME=/home/node/.dsh/share \
     XDG_STATE_HOME=/home/node/.dsh/state \
-    NARB_NATIVE_CACHE_DIR=/home/node/.dsh/cache/native
+    NARB_NATIVE_CACHE_DIR=/home/node/.dsh/cache/native \
+    CBM_CACHE_DIR=/home/node/.dsh/cache/codebase-memory-mcp
 
 # The launcher layer and the plugin it inserts. The patch names the plugin by
 # absolute path, so no package manager and no profile install are involved.
