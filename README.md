@@ -433,10 +433,13 @@ recipe hash (Dockerfile + entrypoint + patch + plugin) is stored in the image
 label `org.opencontainers.image.dsh-recipe`; a sweep builds a version only when
 its image is missing or carries a stale hash, so improving this repo reaches the
 versions in scope exactly once. The 6-hourly sweep is a scan — with nothing new
-it does not touch the registry. `:latest` follows the newest tracked RC and is
-moved by copying the manifest that already passed the smoke test, and is left
-alone when it already points there. A running container therefore updates only
-when upstream ships a newer RC or the recipe here changes — never on a timer.
+it does not touch the registry. Nothing is published before its smoke test
+passes: the image is built, smoked in the runner, and only then pushed, so a
+tag in the registry is always a digest that was actually tested. `:latest`
+follows the newest tracked RC and is moved by copying that manifest, and is
+left alone when it already points there. A running container therefore updates
+only when upstream ships a newer RC or the recipe here changes — never on a
+timer.
 
 Images are `linux/amd64` and published as two packages —
 `ghcr.io/prv-ctech/deepseek-harness` and

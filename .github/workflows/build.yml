@@ -195,21 +195,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # The push can be refused once with `denied: permission_denied:
-      # write_package` when this job races a sibling matrix leg that is creating
-      # the same brand-new package — that is how one package's first
-      # publication lost one tag while the sibling pushed the same name 40s
-      # later. Losing that race is not a build failure, so the push is retried
-      # with identical inputs; the job still fails if the retry fails too.
-      - id: push
-        name: Build and push ${{ matrix.repository }}:${{ matrix.version }}
+      # Built, not pushed: `load` puts the image in the runner's docker daemon,
+      # where the smoke test below runs it. Nothing reaches the registry before
+      # its smoke test has passed, so a tag — and therefore the `:latest` the
+      # retag job copies from it — is always a digest that was actually smoked.
+      - name: Build ${{ matrix.repository }}:${{ matrix.version }}
         uses: docker/build-push-action@v6
-        continue-on-error: true
-        with: &build-push
+        with:
           context: .
           file: Dockerfile
           platforms: linux/amd64
-          push: true
+          load: true
           tags: ${{ matrix.repository }}:${{ matrix.version }}
           build-args: |
             DSH_VERSION=${{ matrix.version }}
@@ -221,15 +217,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # `outcome`, not `conclusion`: it is the result before continue-on-error,
-      # which is the only place the first attempt's failure is still visible.
-      # Layers are in the gha cache by now, so this costs a push, not a build.
-      - name: Retry push ${{ matrix.repository }}:${{ matrix.version }}
-        if: steps.push.outcome == 'failure'
-        uses: docker/build-push-action@v6
-        with: *build-push
-
-      # Smoke test the pushed image in the posture the README documents: a
+      # Smoke test the built image in the posture the README documents: a
       # published port, a state volume, and the launch-token gate answering.
       # The plus variant adds the checks that decide whether a browser can
       # start at all, then a real launch under the hardened runtime, plus
@@ -431,13 +419,16 @@ jobs:
             # rather than trusting it.
             docker exec "$name" test -L /home/node/.dsh/share/apktool/framework/1.apk
 
-            docker exec "$name" sh -c 'jadx -d /tmp/jadxout /tmp/small.apk >/dev/null
-              && grep -q "class MainActivity" \
+            # A `&&` continues the line it is ON: a newline before it ends the
+            # command and the next line is a syntax error in both dash and
+            # bash, which is exactly how this check used to die at `sh: 2`.
+            docker exec "$name" sh -c 'jadx -d /tmp/jadxout /tmp/small.apk >/dev/null &&
+              grep -q "class MainActivity" \
                  /tmp/jadxout/sources/io/github/skylot/android/smallapp/MainActivity.java'
-            docker exec "$name" sh -c 'apktool d -f -o /tmp/apktool-out /tmp/small.apk >/dev/null
-              && test -f /tmp/apktool-out/AndroidManifest.xml
-              && test -f /tmp/apktool-out/apktool.yml
-              && grep -q "MainActivity" \
+            docker exec "$name" sh -c 'apktool d -f -o /tmp/apktool-out /tmp/small.apk >/dev/null &&
+              test -f /tmp/apktool-out/AndroidManifest.xml &&
+              test -f /tmp/apktool-out/apktool.yml &&
+              grep -q "MainActivity" \
                  /tmp/apktool-out/smali/io/github/skylot/android/smallapp/MainActivity.smali'
 
             # codebase-memory-mcp ships for the MCP configuration, which runs
@@ -478,6 +469,24 @@ jobs:
             docker exec "$name" test ! -e /home/node/.local/bin/codebase-memory-mcp
           fi
 
+      # Publish only what survived the smoke test. The push can be refused once
+      # with `denied: permission_denied: write_package` when this job races a
+      # sibling matrix leg that is creating the same brand-new package — that
+      # is how one package's first publication lost one tag while the sibling
+      # pushed the same name 40s later. Losing that race is not a build
+      # failure, so the push is retried; the job still fails if the retry fails
+      # too.
+      - id: push
+        name: Push ${{ matrix.repository }}:${{ matrix.version }}
+        continue-on-error: true
+        run: docker push "${{ matrix.repository }}:${{ matrix.version }}"
+
+      # `outcome`, not `conclusion`: it is the result before continue-on-error,
+      # which is the only place the first attempt's failure is still visible.
+      - name: Retry push ${{ matrix.repository }}:${{ matrix.version }}
+        if: steps.push.outcome == 'failure'
+        run: docker push "${{ matrix.repository }}:${{ matrix.version }}"
+
   latest:
     needs: [plan, build]
     # `always()`, and NOT gated on has_work. Two reasons, both learned the hard
@@ -514,9 +523,10 @@ jobs:
       # leaving one behind would pin it to a version the other moved off.
       #
       # Per repository, and idempotent, so it is safe on every run rather than
-      # only on one that had work to do. A leg that failed never published its
-      # version tag, so the missing source is skipped by name instead of killing
-      # the loop and leaving the packages that DID build on a stale :latest.
+      # only on one that had work to do. Nothing is pushed before its smoke test
+      # passes, so a leg that failed never published its version tag: the
+      # missing source is skipped by name instead of killing the loop and
+      # leaving the packages that DID build on a stale :latest.
       # And a tag already sitting on the right digest is left alone, so a run
       # with nothing to move stays quiet.
       - name: Retag :latest
