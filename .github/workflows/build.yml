@@ -27,6 +27,8 @@ on:
       - Dockerfile
       - docker-entrypoint.sh
       - proxy.patch.yml
+      - graphics/**
+      - tests/test_graphics.py
       - fix/**
       - scripts/**
       - .github/workflows/build.yml
@@ -72,7 +74,7 @@ jobs:
       - name: Compute recipe hash
         id: recipe
         run: |
-          files='Dockerfile docker-entrypoint.sh proxy.patch.yml fix/owns-host.mjs'
+          files='Dockerfile docker-entrypoint.sh proxy.patch.yml fix/owns-host.mjs graphics/runtime.py graphics/openbox.xml'
           # shellcheck disable=SC2086
           echo "base=$(cat $files | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
           echo "plus=$( { cat $files; echo plus; } | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
@@ -468,6 +470,25 @@ jobs:
             docker exec "$name" test ! -e /usr/local/bin/codebase-memory-mcp
             docker exec "$name" test ! -e /home/node/.local/bin/codebase-memory-mcp
           fi
+
+      - name: Graphics local regressions
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_graphics.py' -v
+
+      - name: Hardened graphics infrastructure and same-browser CDP
+        if: matrix.plus == true
+        run: bash scripts/graphics-smoke.sh '${{ matrix.repository }}:${{ matrix.version }}'
+
+      # Native wheels contain GPL codecs with incomplete third-party notices.
+      # Operator review must cover the exact pinned recipe before redistribution.
+      - name: Require Selkies redistribution review
+        if: matrix.plus == true
+        env:
+          REVIEWED: ${{ vars.SELKIES_REDISTRIBUTION_REVIEWED }}
+        run: |
+          test "$REVIEWED" = true || {
+            echo '::error::Plus publication blocked: review exact bundled codec notices/corresponding source per docs/selkies.md, then set SELKIES_REDISTRIBUTION_REVIEWED=true.'
+            exit 1
+          }
 
       # Publish only what survived the smoke test. The push can be refused once
       # with `denied: permission_denied: write_package` when this job races a

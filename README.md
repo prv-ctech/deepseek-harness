@@ -134,11 +134,10 @@ reason — it points the cache at a real filesystem so you can keep `noexec /tmp
 
 ## The `-plus` image
 
-`ghcr.io/prv-ctech/deepseek-harness-plus` is **the base image plus two layers**:
-a real browser, and the toolchain a plugin, a task or the MCP configuration can
-discover instead of downloading into the state volume on every deployment.
-`INSTALL_PLUS=true` selects both layers, so they cannot drift apart. Same
-entrypoint, same patch, same hardening, same ports, same state volume —
+`ghcr.io/prv-ctech/deepseek-harness-plus` adds system Chrome, discoverable
+toolchains and an **opt-in Selkies virtual display**. `INSTALL_PLUS=true`
+selects these image dependencies; graphics stays disabled by default. Same
+patch, ownership handling, hardening, published port and state volume —
 switching is one variable:
 
 ```sh
@@ -146,6 +145,23 @@ DSH_IMAGE=ghcr.io/prv-ctech/deepseek-harness-plus:latest docker compose up -d
 ```
 
 On Unraid, set *Repository* to `ghcr.io/prv-ctech/deepseek-harness-plus:latest`.
+
+### Opt-in CPU Selkies
+
+Pinned native Selkies 2.0.0, Xvfb with X authentication, PulseAudio and minimal
+Openbox support headed Chrome without GPU/host display. CPU H.264 over
+WebSockets with 4:2:0, authenticated loopback viewer; no new published port.
+Runtime starts no Chrome: future plugin owns browser launch/control, and DSH
+viewer integration is out of scope. Existing graphics-disabled/headless startup
+is unchanged.
+
+Set `DSH_GRAPHICS_ENABLED=true` only after provisioning an owned password file;
+see [runtime configuration, exact isolated build/smoke commands, pending live
+acceptance and plugin handoff](<docs/selkies.md>). Do not apply examples to an
+active deployment without approval. Selkies package alone reports 282455 KiB
+installed, before display/audio prerequisites; no full desktop/compiler/driver
+stack is added. Bundled GPL codec notices/corresponding-source completeness is
+**not cleared**; CI Plus publication requires explicit redistribution review.
 
 ### A real browser
 
@@ -411,9 +427,9 @@ restart**, so a 401 after a restart means: re-read the log line. A 403 means the
 
 ## What this image is not
 
-- **No desktop.** The base image ships no browser at all; the `-plus` image
-  ships Chrome and its runtime libraries, but no desktop and no noVNC. The GUI's
-  browser view is a CDP screencast, not a virtual desktop.
+- **No full desktop environment.** Base has no browser; Plus has Chrome and
+  opt-in Xvfb/PulseAudio/Openbox/Selkies. No noVNC. DSH's existing browser view
+  remains a CDP screencast; Selkies embedding belongs to a future plugin.
 - **Not a TLS terminator.** Put it behind a proxy that does TLS.
 - **No `Secure` cookie, no security headers** — upstream cannot, so the proxy
   must. See above.
@@ -429,7 +445,7 @@ image installs `@deepseek-ai/dsh@<version>`; a sweep skips the rest and picks
 them up on a later sweep.
 
 Each RC is built once per recipe, and nothing is rebuilt without a reason. The
-recipe hash (Dockerfile + entrypoint + patch + plugin) is stored in the image
+recipe hash (Dockerfile + entrypoint + patch + plugin + graphics runtime/config) is stored in the image
 label `org.opencontainers.image.dsh-recipe`; a sweep builds a version only when
 its image is missing or carries a stale hash, so improving this repo reaches the
 versions in scope exactly once. The 6-hourly sweep is a scan — with nothing new
@@ -448,7 +464,8 @@ the `-plus` one adds `--build-arg INSTALL_PLUS=true`, and each package carries
 its own recipe label, so neither can mask a rebuild of the other.
 
 The Docker build can copy only `Dockerfile`, `docker-entrypoint.sh`,
-`proxy.patch.yml`, and `fix/owns-host.mjs` from its context. Local `.env` files,
+`proxy.patch.yml`, `fix/owns-host.mjs`, and the two image-owned files in
+[graphics](<graphics/>) from its context. Local `.env` files,
 credentials, runtime state, and research notes are excluded by `.dockerignore`.
 
 ```sh

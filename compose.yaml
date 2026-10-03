@@ -33,6 +33,14 @@ services:
       # fails closed instead of silently running unsandboxed. Set this to
       # danger-full-access only if you accept unsandboxed execution.
       DSH_PERMISSION_MODE: ${DSH_PERMISSION_MODE:-workspace-write}
+      # Plus-only; no Chrome autolaunch, viewer port publication or DSH embedding.
+      # Create an owned 0600 password file before opting in; see docs/selkies.md.
+      DSH_GRAPHICS_ENABLED: ${DSH_GRAPHICS_ENABLED:-false}
+      DSH_GRAPHICS_DISPLAY: ${DSH_GRAPHICS_DISPLAY:-:99}
+      DSH_GRAPHICS_RESOLUTION: ${DSH_GRAPHICS_RESOLUTION:-1280x720}
+      DSH_GRAPHICS_MAX_RESOLUTION: ${DSH_GRAPHICS_MAX_RESOLUTION:-3840x2160}
+      DSH_GRAPHICS_PORT: ${DSH_GRAPHICS_PORT:-8080}
+      DSH_GRAPHICS_PASSWORD_FILE: ${DSH_GRAPHICS_PASSWORD_FILE:-/home/node/.dsh/graphics-password}
     ports:
       # Host side defaults to all interfaces so newt/Pangolin can reach it.
       # Narrow it to a specific LAN address, e.g. 192.168.1.10:3080:3080.
@@ -48,7 +56,10 @@ services:
     # filesystem, which the image already does.
     read_only: true
     tmpfs:
-      - /tmp:rw,nosuid,nodev,size=256m
+      - /tmp:rw,nosuid,nodev,size=${DSH_TMP_SIZE:-256m}
+    # Existing Docker default is 64m. Graphics testing recommends 256m; no GPU.
+    shm_size: ${DSH_SHM_SIZE:-64m}
+    stop_grace_period: 20s
     security_opt:
       - no-new-privileges:true
     # The entrypoint starts as root only to take ownership of the mounted
@@ -61,7 +72,7 @@ services:
       - FOWNER
       - SETGID
       - SETUID
-    pids_limit: 512
+    pids_limit: ${DSH_PIDS_LIMIT:-512}
 
 volumes:
   dsh-state:

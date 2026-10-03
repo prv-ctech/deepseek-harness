@@ -19,6 +19,19 @@ EXTRA_TRUSTED="${DSH_TRUSTED_HOSTS:-}"
 
 log() { printf 'dsh-entrypoint: %s\n' "$*" >&2; }
 
+# Select before privilege drop; both launch paths run as the same runtime UID.
+LAUNCHER=dsh
+case "${DSH_GRAPHICS_ENABLED:-false}" in
+  false) ;;
+  true)
+    if [ ! -x /usr/bin/selkies ] || [ ! -x /opt/selkies/bin/python3 ]; then
+      log 'graphics requires the Plus image with Selkies installed'; exit 1
+    fi
+    LAUNCHER=/usr/local/bin/dsh-graphics
+    ;;
+  *) log 'DSH_GRAPHICS_ENABLED must be true or false'; exit 1 ;;
+esac
+
 # One stat in the common case; recursive chown only when something is off.
 needs_chown() {
   [ -n "$(find "$1" \( ! -uid "$PUID" -o ! -gid "$PGID" \) -print -quit 2>/dev/null)" ]
@@ -125,7 +138,7 @@ if [ "$(id -u)" = "0" ]; then
   android_framework
   exec setpriv --reuid "$PUID" --regid "$PGID" --clear-groups \
     env HOME="$HOME_DIR" SHELL="${SHELL:-/bin/bash}" DSH_HOME="$STATE" \
-    dsh "$@"
+    "$LAUNCHER" "$@"
 fi
 
 # Explicit `--user`: nothing to drop, but a state dir we cannot write is worth
@@ -138,4 +151,4 @@ if [ ! -w "$STATE" ]; then
 fi
 
 android_framework
-exec dsh "$@"
+exec "$LAUNCHER" "$@"

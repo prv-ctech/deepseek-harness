@@ -6,3 +6,6 @@
 !proxy.patch.yml
 !fix/
 !fix/owns-host.mjs
+!graphics/
+!graphics/runtime.py
+!graphics/openbox.xml
