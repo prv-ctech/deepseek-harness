@@ -36,6 +36,29 @@ class GraphicsTests(unittest.TestCase):
             self.assertIn("noexec", mounts[target])
             self.assertNotIn("exec", mounts[target])
 
+    def test_smoke_failure_reports_before_cleanup(self):
+        docker = Path(self.temp.name) / "docker"
+        docker.write_text('''#!/bin/sh
+case "$1 $2" in
+  "container inspect") exit 1 ;;
+  "run -d") exit 42 ;;
+  "inspect --format") echo "diagnostic container state" ;;
+  "logs --tail") echo "diagnostic container logs"; echo logs >> "$MOCK_DOCKER_TRACE" ;;
+  "rm -f") echo cleanup >> "$MOCK_DOCKER_TRACE" ;;
+esac
+''')
+        docker.chmod(0o755)
+        trace = Path(self.temp.name) / "trace"
+        result = subprocess.run(["bash", str(ROOT / "scripts/graphics-smoke.sh"), "test-image"],
+                                env={**os.environ, "PATH": f"{self.temp.name}:{os.environ['PATH']}",
+                                     "MOCK_DOCKER_TRACE": str(trace)},
+                                capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 42)
+        self.assertRegex(result.stderr, r"graphics smoke failed at line \d+ \(exit 42\)")
+        self.assertIn("diagnostic container state", result.stderr)
+        self.assertIn("diagnostic container logs", result.stderr)
+        self.assertEqual(trace.read_text().splitlines(), ["logs", "logs", "logs", "cleanup"])
+
     def test_config_validation(self):
         self.assertEqual(graphics.config(self.env)[:4], (":99", (1280, 720), (3840, 2160), 8080))
         self.assertEqual(graphics.config({**self.env, "DSH_GRAPHICS_DISPLAY": ":099"})[0], ":99")

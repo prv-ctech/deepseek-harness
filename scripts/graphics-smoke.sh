@@ -14,6 +14,13 @@ cleanup() {
   docker rm -f "$name" "${name}-disabled" "${name}-failure" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
+trap 'line=$LINENO status=$?; trap - ERR
+  printf "graphics smoke failed at line %s (exit %s)\n" "$line" "$status" >&2
+  for container in "$name" "${name}-disabled" "${name}-failure"; do
+    docker inspect --format "{{.Name}} status={{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}}" "$container" >&2 || true
+    docker logs --tail 100 "$container" >&2 || true
+  done
+  exit "$status"' ERR
 hardened=(--read-only --cap-drop ALL --security-opt no-new-privileges:true
   --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETGID --cap-add SETUID
   --pids-limit 512 --shm-size 256m --stop-timeout 20
