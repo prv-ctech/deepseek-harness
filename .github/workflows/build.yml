@@ -302,14 +302,14 @@ jobs:
             docker exec "$name" sh -c 'test -n "$(fc-list :lang=ar)"'      # fonts-noto-core
             docker exec "$name" sh -c 'test -n "$(fc-list :charset=1f600)"' # fonts-noto-color-emoji
 
-            # compose.yaml's posture, including the five capabilities the
-            # entrypoint's chown/setpriv path needs; everything else is dropped.
+            # Compose posture: ownership/privilege-drop capabilities plus KILL
+            # for root tini to signal its non-root child; everything else drops.
             # Boots dsh too, so it also proves that path survives --read-only.
             # noexec /tmp is safe: Chrome never execs from there.
             docker run -d --name "$hardened" \
               --read-only --cap-drop ALL --security-opt no-new-privileges:true \
               --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
-              --cap-add SETGID --cap-add SETUID \
+              --cap-add SETGID --cap-add SETUID --cap-add KILL \
               --tmpfs /tmp:rw,nosuid,nodev,noexec,size=256m \
               -v "${hardened}-state:/home/node/.dsh" "$IMAGE_TAG"
             for _ in $(seq 1 40); do

@@ -61,8 +61,8 @@ services:
     stop_grace_period: 20s
     security_opt:
       - no-new-privileges:true
-    # The entrypoint starts as root only to take ownership of the mounted
-    # volumes, so it needs exactly these five; everything else is dropped.
+    # Root entrypoint needs ownership/privilege-drop caps; root tini also needs
+    # KILL to forward shutdown signals to the non-root child. Everything else drops.
     cap_drop:
       - ALL
     cap_add:
@@ -71,6 +71,7 @@ services:
       - FOWNER
       - SETGID
       - SETUID
+      - KILL
     pids_limit: ${DSH_PIDS_LIMIT:-512}
 
 volumes:

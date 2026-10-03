@@ -59,6 +59,12 @@ esac
         self.assertIn("diagnostic container logs", result.stderr)
         self.assertEqual(trace.read_text().splitlines(), ["logs", "logs", "logs", "cleanup"])
 
+    def test_hardened_configs_allow_init_cross_uid_signals(self):
+        self.assertIn("      - KILL\n", (ROOT / "compose.yaml").read_text())
+        for file in ("scripts/graphics-smoke.sh", ".github/workflows/build.yml", "docs/selkies.md"):
+            with self.subTest(file=file):
+                self.assertIn("--cap-add KILL", (ROOT / file).read_text())
+
     def test_config_validation(self):
         self.assertEqual(graphics.config(self.env)[:4], (":99", (1280, 720), (3840, 2160), 8080))
         self.assertEqual(graphics.config({**self.env, "DSH_GRAPHICS_DISPLAY": ":099"})[0], ":99")

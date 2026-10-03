@@ -22,7 +22,7 @@ trap 'line=$LINENO status=$?; trap - ERR
   done
   exit "$status"' ERR
 hardened=(--read-only --cap-drop ALL --security-opt no-new-privileges:true
-  --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETGID --cap-add SETUID
+  --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETGID --cap-add SETUID --cap-add KILL
   --pids-limit 512 --shm-size 256m --stop-timeout 20
   --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m
   # Match production's exec-capable state volume: native addons load from its cache.
@@ -58,6 +58,7 @@ assert ((root/'Xauthority').stat().st_mode & 0o777) == 0o600
 for pid in m['pids'].values():
     status = pathlib.Path(f'/proc/{pid}/status').read_text()
     assert re.search(r'^Uid:\s+1234\s+1234\s+1234\s+1234$', status, re.M), status
+    assert re.search(r'^CapEff:\s+0+$', status, re.M), status
 try:
     import pwd
     pwd.getpwuid(1234)
