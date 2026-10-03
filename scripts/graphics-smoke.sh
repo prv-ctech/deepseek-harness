@@ -18,7 +18,8 @@ hardened=(--read-only --cap-drop ALL --security-opt no-new-privileges:true
   --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETGID --cap-add SETUID
   --pids-limit 512 --shm-size 256m --stop-timeout 20
   --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m
-  --tmpfs /home/node/.dsh:rw,nosuid,nodev,size=512m,uid=1234,gid=2345
+  # Match production's exec-capable state volume: native addons load from its cache.
+  --tmpfs /home/node/.dsh:rw,nosuid,nodev,exec,size=512m,uid=1234,gid=2345
   --tmpfs /workspace:rw,nosuid,nodev,noexec,size=64m,uid=1234,gid=2345
   -e PUID=1234 -e PGID=2345)
 healthy() {

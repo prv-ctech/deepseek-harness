@@ -24,6 +24,18 @@ class GraphicsTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.env = {}
 
+    def test_smoke_native_cache_mount_is_executable(self):
+        mounts = {}
+        for line in (ROOT / "scripts/graphics-smoke.sh").read_text().splitlines():
+            if line.strip().startswith("--tmpfs "):
+                target, options = line.split()[1].split(":", 1)
+                mounts[target] = set(options.split(","))
+        self.assertIn("exec", mounts["/home/node/.dsh"])
+        self.assertNotIn("noexec", mounts["/home/node/.dsh"])
+        for target in ("/tmp", "/workspace"):
+            self.assertIn("noexec", mounts[target])
+            self.assertNotIn("exec", mounts[target])
+
     def test_config_validation(self):
         self.assertEqual(graphics.config(self.env)[:4], (":99", (1280, 720), (3840, 2160), 8080))
         self.assertEqual(graphics.config({**self.env, "DSH_GRAPHICS_DISPLAY": ":099"})[0], ":99")
