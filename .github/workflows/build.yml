@@ -27,8 +27,6 @@ on:
       - Dockerfile
       - docker-entrypoint.sh
       - proxy.patch.yml
-      - graphics/**
-      - tests/test_graphics.py
       - fix/**
       - scripts/**
       - .github/workflows/build.yml
@@ -74,7 +72,7 @@ jobs:
       - name: Compute recipe hash
         id: recipe
         run: |
-          files='Dockerfile docker-entrypoint.sh proxy.patch.yml fix/owns-host.mjs graphics/runtime.py graphics/openbox.xml'
+          files='Dockerfile docker-entrypoint.sh proxy.patch.yml fix/owns-host.mjs'
           # shellcheck disable=SC2086
           echo "base=$(cat $files | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
           echo "plus=$( { cat $files; echo plus; } | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
@@ -302,14 +300,14 @@ jobs:
             docker exec "$name" sh -c 'test -n "$(fc-list :lang=ar)"'      # fonts-noto-core
             docker exec "$name" sh -c 'test -n "$(fc-list :charset=1f600)"' # fonts-noto-color-emoji
 
-            # Compose posture: ownership/privilege-drop capabilities plus KILL
-            # for root tini to signal its non-root child; everything else drops.
+            # compose.yaml's posture, including the five capabilities the
+            # entrypoint's chown/setpriv path needs; everything else is dropped.
             # Boots dsh too, so it also proves that path survives --read-only.
             # noexec /tmp is safe: Chrome never execs from there.
             docker run -d --name "$hardened" \
               --read-only --cap-drop ALL --security-opt no-new-privileges:true \
               --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
-              --cap-add SETGID --cap-add SETUID --cap-add KILL \
+              --cap-add SETGID --cap-add SETUID \
               --tmpfs /tmp:rw,nosuid,nodev,noexec,size=256m \
               -v "${hardened}-state:/home/node/.dsh" "$IMAGE_TAG"
             for _ in $(seq 1 40); do
@@ -470,25 +468,6 @@ jobs:
             docker exec "$name" test ! -e /usr/local/bin/codebase-memory-mcp
             docker exec "$name" test ! -e /home/node/.local/bin/codebase-memory-mcp
           fi
-
-      - name: Graphics local regressions
-        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_graphics.py' -v
-
-      - name: Hardened graphics infrastructure and same-browser CDP
-        if: matrix.plus == true
-        run: bash scripts/graphics-smoke.sh '${{ matrix.repository }}:${{ matrix.version }}'
-
-      # Native wheels contain GPL codecs with incomplete third-party notices.
-      # Operator review must cover the exact pinned recipe before redistribution.
-      - name: Require Selkies redistribution review
-        if: matrix.plus == true
-        env:
-          REVIEWED: ${{ vars.SELKIES_REDISTRIBUTION_REVIEWED }}
-        run: |
-          test "$REVIEWED" = true || {
-            echo '::error::Plus publication blocked: review exact bundled codec notices/corresponding source per docs/selkies.md, then set SELKIES_REDISTRIBUTION_REVIEWED=true.'
-            exit 1
-          }
 
       # Publish only what survived the smoke test. The push can be refused once
       # with `denied: permission_denied: write_package` when this job races a

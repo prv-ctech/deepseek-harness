@@ -231,27 +231,6 @@ RUN if [ "$INSTALL_PLUS" = "true" ]; then \
       rm -rf /var/lib/apt/lists/* /root/.cache; \
     fi
 
-# Native Selkies includes its web client and capture/codec extensions. Its
-# Bookworm package reuses Python 3.11; no GStreamer, desktop or vendor driver.
-# Default wheels bundle GPL-enabled x264/x265/FFmpeg: see docs/selkies.md before
-# redistribution. Runtime stays off unless DSH_GRAPHICS_ENABLED=true.
-ARG SELKIES_VERSION=2.0.0
-ARG SELKIES_SHA256=fd02cbc08b94eb65f5e834c11849084eec605564d5964f2500dc1209425dc620
-RUN if [ "$INSTALL_PLUS" = "true" ]; then \
-      set -eux; \
-      apt-get update; \
-      curl -fsSLo /tmp/selkies.deb \
-        "https://github.com/selkies-project/selkies/releases/download/${SELKIES_VERSION}/selkies-${SELKIES_VERSION}-bookworm-amd64.deb"; \
-      echo "${SELKIES_SHA256}  /tmp/selkies.deb" | sha256sum -c -; \
-      apt-get install -y --no-install-recommends \
-        /tmp/selkies.deb xvfb xauth x11-utils x11-xserver-utils \
-        pulseaudio pulseaudio-utils openbox iproute2; \
-      test "$(dpkg-query -W -f='${Version}' selkies)" = "${SELKIES_VERSION}-1~bookworm"; \
-      /opt/selkies/bin/python3 -c 'import selkies, pixelflux, pcmflux'; \
-      rm -f /tmp/selkies.deb; \
-      rm -rf /var/lib/apt/lists/*; \
-    fi
-
 # PIP_BREAK_SYSTEM_PACKAGES is the only concession the -plus toolchain asks for:
 # Debian's Python 3.11 is marked PEP 668 externally-managed, so every `pip
 # install` in this image is refused without it — including the agent's own. It is
@@ -305,14 +284,11 @@ COPY proxy.patch.yml /opt/deepseek-harness/proxy.patch.yml
 COPY fix/owns-host.mjs /opt/deepseek-harness/fix/owns-host.mjs
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-COPY graphics/runtime.py /usr/local/bin/dsh-graphics
-COPY graphics/openbox.xml /opt/deepseek-harness/graphics/openbox.xml
 
 # COPY preserves the source mode, and a restrictive umask produces 0600 files
 # that the runtime user (a bare PUID) then cannot read.
 RUN chmod 0644 /opt/deepseek-harness/proxy.patch.yml /opt/deepseek-harness/fix/owns-host.mjs \
- && chmod 0755 /usr/local/bin/docker-entrypoint.sh /usr/local/bin/dsh-graphics \
- && chmod 0644 /opt/deepseek-harness/graphics/openbox.xml
+ && chmod 0755 /usr/local/bin/docker-entrypoint.sh
 
 # The agent's sandbox root is process.cwd(), so /workspace is both the working
 # directory and the writable boundary of the sandbox. Both trees are created
