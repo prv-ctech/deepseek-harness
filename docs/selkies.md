@@ -107,6 +107,58 @@ KEEP_GRAPHICS_SMOKE=true bash scripts/graphics-smoke.sh dsh-plus-selkies:test
 
 Smoke uses unique test container names, non-passwd UID/GID 1234:2345, read-only root, existing capabilities, no published ports, tmpfs state/workspace (no durable volumes), authenticated X/audio/HTTP/WS, wrong-cookie denial, actual resize, listener checks, healthy graphics-disabled DSH, manually launched temporary headed Chrome, CDP `SystemInfo.getProcessInfo` browser PID identity and `Runtime.evaluate` on that same instance, then clean stop and a second fresh graphics runtime killed-audio fail-closed check. Keep mode leaves shutdown/failure checks to operator. No secrets appear on command line. It does **not** prove actual client-decoded streaming, active encoder or user interaction. Default cleanup removes only its created containers/host temporary secret, never persistent state volumes. Keep mode transfers test resource cleanup to operator and prints exact names/secret directory; stop/remove that named test container and inspect/remove that exact temporary host directory when finished.
 
+### Testing an unmerged branch on Unraid
+
+The branch does not create a new image or tag. CI builds on pushes to `main` only
+(`.github/workflows/build.yml`), so a branch push publishes nothing, and a manual
+run would still stop at the codec redistribution gate before the Plus push.
+Build the existing `-plus` variant locally on the Unraid host instead, then add a
+**separate** test container — never repoint or restart the active deployment.
+
+```sh
+# Unraid terminal, on the array (not /boot). Needs free space in docker.img.
+curl -fsSL -o /tmp/dsh.tar.gz \
+  https://codeload.github.com/prv-ctech/deepseek-harness/tar.gz/refs/heads/feat/selkies-cpu
+mkdir -p /mnt/user/appdata/dsh-selkies-src && tar -xzf /tmp/dsh.tar.gz -C /mnt/user/appdata/dsh-selkies-src --strip-components=1
+cd /mnt/user/appdata/dsh-selkies-src
+docker build --build-arg INSTALL_PLUS=true --build-arg DSH_VERSION=0.2.0-rc.2 -t dsh-plus-selkies:test .
+```
+
+Unraid lists the local image once built, so its Docker UI can create the test
+container by name. From the terminal the equivalent hardened run is:
+
+```sh
+STATE=/mnt/user/appdata/dsh-selkies-test
+mkdir -p "$STATE"
+printf '%s\n' "$(head -c 24 /dev/urandom | base64 | tr -d '/+=' )" > "$STATE/graphics-password"
+chmod 600 "$STATE/graphics-password" && chown 99:100 "$STATE/graphics-password"
+docker run -d --name dsh-selkies-test --restart no \
+  --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+  --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETGID --cap-add SETUID \
+  --pids-limit 512 --shm-size 256m --stop-timeout 20 \
+  --tmpfs /tmp:rw,nosuid,nodev,size=512m -p 3081:3080 \
+  -v "$STATE":/home/node/.dsh -v "$STATE/workspace":/workspace \
+  -e PUID=99 -e PGID=100 -e DSH_GRAPHICS_ENABLED=true \
+  dsh-plus-selkies:test
+docker logs -f dsh-selkies-test   # expect "dsh-graphics: graphics ready", then a dsh pid line
+docker exec -u 99:100 dsh-selkies-test /usr/local/bin/dsh-graphics --check-graphics
+```
+
+The viewer port stays internal; only DSH's `3080` is published here (host `3081`,
+so it cannot collide with the active container). To see pixels, launch the manual
+test Chrome on that display and reach the viewer through the relay below:
+
+```sh
+docker exec -u 99:100 -e DISPLAY=:99 -e XAUTHORITY=/tmp/dsh-graphics-99/Xauthority \
+  -e HOME=/tmp/dsh-graphics-99/home dsh-selkies-test google-chrome-stable \
+  --no-sandbox --disable-dev-shm-usage --ozone-platform=x11 \
+  --user-data-dir=/tmp/dsh-graphics-99/home/profile https://example.com
+```
+
+Finish with `docker rm -f dsh-selkies-test` and remove that test state directory
+and `/mnt/user/appdata/dsh-selkies-src` when done. The active deployment, its
+image and its state are untouched by this path.
+
 ### Authenticated temporary viewer access
 
 Docker port publication cannot reach a service bound to container loopback. Do not “fix” production by rebinding Selkies publicly. For retained **test** container, operator on Docker host with authorized root access and installed `nsenter`/`socat` can start this temporary authenticated relay (Basic auth is still enforced by Selkies):
