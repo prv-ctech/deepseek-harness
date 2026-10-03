@@ -34,13 +34,12 @@ services:
       # danger-full-access only if you accept unsandboxed execution.
       DSH_PERMISSION_MODE: ${DSH_PERMISSION_MODE:-workspace-write}
       # Plus-only; no Chrome autolaunch, viewer port publication or DSH embedding.
-      # Create an owned 0600 password file before opting in; see docs/selkies.md.
+      # Viewer authentication belongs to Pangolin/proxy; see docs/selkies.md.
       DSH_GRAPHICS_ENABLED: ${DSH_GRAPHICS_ENABLED:-false}
       DSH_GRAPHICS_DISPLAY: ${DSH_GRAPHICS_DISPLAY:-:99}
       DSH_GRAPHICS_RESOLUTION: ${DSH_GRAPHICS_RESOLUTION:-1280x720}
       DSH_GRAPHICS_MAX_RESOLUTION: ${DSH_GRAPHICS_MAX_RESOLUTION:-3840x2160}
       DSH_GRAPHICS_PORT: ${DSH_GRAPHICS_PORT:-8080}
-      DSH_GRAPHICS_PASSWORD_FILE: ${DSH_GRAPHICS_PASSWORD_FILE:-/home/node/.dsh/graphics-password}
     ports:
       # Host side defaults to all interfaces so newt/Pangolin can reach it.
       # Narrow it to a specific LAN address, e.g. 192.168.1.10:3080:3080.

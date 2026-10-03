@@ -4,9 +4,6 @@ set -euo pipefail
 image="${1:?usage: scripts/graphics-smoke.sh LOCAL_PLUS_IMAGE}"
 command -v docker >/dev/null || { echo 'Docker host required; no tests run' >&2; exit 1; }
 name="dsh-graphics-smoke-$(date +%s)-$$"
-secret_dir=$(mktemp -d /tmp/dsh-graphics-smoke.XXXXXXXX)
-# Before cleanup, verify the exact generated host target and isolated container names.
-[[ "$(realpath "$secret_dir")" == /tmp/dsh-graphics-smoke.* && ! -L "$secret_dir" ]]
 for container in "$name" "${name}-disabled" "${name}-failure"; do
   if docker container inspect "$container" >/dev/null 2>&1; then
     echo "refusing to reuse $container" >&2; exit 1
@@ -15,14 +12,8 @@ done
 cleanup() {
   case "$name" in dsh-graphics-smoke-[0-9]*-[0-9]*) ;; *) return 1;; esac
   docker rm -f "$name" "${name}-disabled" "${name}-failure" >/dev/null 2>&1 || true
-  [[ "$(realpath "$secret_dir")" == /tmp/dsh-graphics-smoke.* && ! -L "$secret_dir" ]] || return 1
-  rm -rf -- "$secret_dir"
 }
 trap cleanup EXIT
-python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > "$secret_dir/password"
-# Host parent stays 0700; single read-only bind is readable by arbitrary test UID.
-# Production should instead use a 0400 secret owned by its configured runtime UID.
-chmod 0444 "$secret_dir/password"
 hardened=(--read-only --cap-drop ALL --security-opt no-new-privileges:true
   --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETGID --cap-add SETUID
   --pids-limit 512 --shm-size 256m --stop-timeout 20
@@ -45,9 +36,7 @@ docker exec "${name}-disabled" test ! -e /tmp/dsh-graphics-99/environment.json
 docker stop "${name}-disabled" >/dev/null
 
 docker run -d --name "$name" "${hardened[@]}" \
-  -e DSH_GRAPHICS_ENABLED=true -e DSH_GRAPHICS_DISPLAY=:98 \
-  -e DSH_GRAPHICS_PASSWORD_FILE=/run/graphics-password \
-  --mount "type=bind,src=$secret_dir/password,dst=/run/graphics-password,readonly" "$image"
+  -e DSH_GRAPHICS_ENABLED=true -e DSH_GRAPHICS_DISPLAY=:98 "$image"
 healthy "$name"
 docker exec -u 1234:2345 "$name" /usr/local/bin/dsh-graphics --check-graphics
 # Never publish a production viewer, X11 or CDP port. Checks run inside test netns.
@@ -75,18 +64,15 @@ for resolution in ('1920x1080', '1280x720'):
     output = subprocess.check_output(['xdpyinfo'], env=env, text=True, timeout=3)
     actual = re.search(r'dimensions:\s+(\d+)x(\d+) pixels', output)
     assert actual and 'x'.join(actual.groups()) == resolution, output
-password = pathlib.Path('/run/graphics-password').read_text().strip()
-auth = 'Basic ' + base64.b64encode(('dsh:'+password).encode()).decode()
 def request(path, headers):
     c = http.client.HTTPConnection('127.0.0.1',8080,timeout=3)
     c.request('GET',path,headers=headers)
     status = c.getresponse().status
     c.close()
     return status
-assert request('/',{}) == 401
-assert request('/',{'Authorization':auth}) == 200
+assert request('/',{}) == 200
 ws = {'Connection':'Upgrade', 'Upgrade':'websocket','Sec-WebSocket-Version':'13',
-      'Sec-WebSocket-Key':base64.b64encode(os.urandom(16)).decode(), 'Authorization':auth}
+      'Sec-WebSocket-Key':base64.b64encode(os.urandom(16)).decode()}
 assert request('/api/websockets',{**ws,'Origin':'https://evil.invalid'}) == 403
 assert request('/api/websockets',ws) == 101
 listeners = subprocess.check_output(['ss','-lntH'],text=True)
@@ -143,8 +129,8 @@ JS
 if [[ "${KEEP_GRAPHICS_SMOKE:-false}" == true ]]; then
   docker rm -f "${name}-disabled" >/dev/null
   trap - EXIT
-  printf 'Retained isolated container: %s\nSecret directory (host): %s\n' "$name" "$secret_dir"
-  echo 'Interactive media checks and eventual test-container/secret cleanup are now operator-owned; see docs/selkies.md.'
+  printf 'Retained isolated container: %s\n' "$name"
+  echo 'Interactive media checks and eventual test-container cleanup are now operator-owned; see docs/selkies.md.'
   exit 0
 fi
 docker exec -i -u 1234:2345 "$name" python3 - <<'PY'
@@ -159,9 +145,7 @@ test "$(docker inspect --format '{{.State.ExitCode}}' "$name")" = 0
 docker logs "$name" 2>&1 | grep 'owned graphics processes reaped; private runtime removed' >/dev/null
 # Independent fresh runtime: kill audio and require fail-closed DSH/service cleanup.
 docker run -d --name "${name}-failure" "${hardened[@]}" \
-  -e DSH_GRAPHICS_ENABLED=true -e DSH_GRAPHICS_DISPLAY=:98 \
-  -e DSH_GRAPHICS_PASSWORD_FILE=/run/graphics-password \
-  --mount "type=bind,src=$secret_dir/password,dst=/run/graphics-password,readonly" "$image"
+  -e DSH_GRAPHICS_ENABLED=true -e DSH_GRAPHICS_DISPLAY=:98 "$image"
 healthy "${name}-failure"
 docker exec -u 1234:2345 "${name}-failure" python3 -c \
   'import json,os,signal; m=json.load(open("/tmp/dsh-graphics-98/environment.json")); os.kill(m["pids"]["PulseAudio"],signal.SIGKILL)'

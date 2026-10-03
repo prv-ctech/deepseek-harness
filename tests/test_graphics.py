@@ -22,9 +22,7 @@ class GraphicsTests(unittest.TestCase):
         graphics.STOP.clear()
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.secret = Path(self.temp.name) / "password"
-        self.secret.write_text("test-password-not-production\n")
-        self.env = {"DSH_GRAPHICS_PASSWORD_FILE": str(self.secret)}
+        self.env = {}
 
     def test_config_validation(self):
         self.assertEqual(graphics.config(self.env)[:4], (":99", (1280, 720), (3840, 2160), 8080))
@@ -32,18 +30,13 @@ class GraphicsTests(unittest.TestCase):
         for key, value in (("DSH_GRAPHICS_DISPLAY", ":1;evil"), ("DSH_GRAPHICS_DISPLAY", ":65536"),
                            ("DSH_GRAPHICS_RESOLUTION", "1279x721"), ("DSH_GRAPHICS_RESOLUTION", "9999x9999"),
                            ("DSH_GRAPHICS_PORT", "3080"), ("DSH_GRAPHICS_PORT", "80"),
-                           ("DSH_GRAPHICS_MAX_RESOLUTION", "640x360"),
-                           ("DSH_GRAPHICS_PASSWORD_FILE", "relative")):
+                           ("DSH_GRAPHICS_MAX_RESOLUTION", "640x360")):
             with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                 graphics.config({**self.env, key: value})
-        for password in ("short", "long-enough-password\nevil", "long-enough\0password", "x" * 4096 + "\nextra"):
-            self.secret.write_text(password)
-            with self.assertRaises(ValueError):
-                graphics.config(self.env)
 
     def test_security_settings_are_locked(self):
         args = graphics.streamer_args(8080, Path("/tmp/example"))
-        for flag in ("--addr=127.0.0.1", "--mode=websockets", "--enable-basic-auth=true",
+        for flag in ("--addr=127.0.0.1", "--mode=websockets", "--enable-basic-auth=false|locked",
                      "--use-cpu=true|locked", "--video-fullcolor=false|locked", "--encoder=h264enc",
                      "--enable-dual-mode=false|locked", "--microphone-enabled=false|locked",
                      "--webcam-enabled=false|locked", "--command-enabled=false|locked",
@@ -51,6 +44,17 @@ class GraphicsTests(unittest.TestCase):
             self.assertIn(flag, args)
         self.assertFalse(any("password" in flag for flag in args))
         self.assertNotIn("--public", args)
+
+    def test_viewer_readiness_is_loopback_without_extra_login_or_proxy(self):
+        opener = unittest.mock.MagicMock()
+        response = opener.open.return_value.__enter__.return_value
+        response.status = 200
+        response.read.return_value = b"<html>viewer</html>"
+        with patch.object(graphics.urllib.request, "ProxyHandler") as proxy, \
+                patch.object(graphics.urllib.request, "build_opener", return_value=opener):
+            self.assertTrue(graphics.viewer_ready(8080))
+            proxy.assert_called_once_with({})
+            opener.open.assert_called_once_with("http://127.0.0.1:8080/", timeout=2)
 
     def test_readiness_checks_real_geometry_not_helper_exit(self):
         with patch.object(graphics, "command", return_value="dimensions: 1280x720 pixels (1x1 millimeters)"):
@@ -75,6 +79,7 @@ class GraphicsTests(unittest.TestCase):
         # Unique reserved high display; run() creates it exclusively and owns cleanup.
         self.env.update(DSH_GRAPHICS_DISPLAY=":64321", DISPLAY=":2",
                         SELKIES_MASTER_TOKEN="must-not-reach-streamer", PIXELFLUX_CU="9500",
+                        SELKIES_ENABLE_BASIC_AUTH="true", SELKIES_BASIC_AUTH_PASSWORD="unused-parent-value",
                         VIEWONLY_PASSWORD="unintended-second-password", SUBFOLDER="unexpected-prefix")
         captured = []
         class Child:
@@ -110,6 +115,8 @@ class GraphicsTests(unittest.TestCase):
         self.assertFalse(any("chrome" in argv[0] for argv, _ in captured))
         for _, env in captured[:-1]:
             self.assertNotIn("SELKIES_MASTER_TOKEN", env)
+            self.assertNotIn("SELKIES_ENABLE_BASIC_AUTH", env)
+            self.assertNotIn("SELKIES_BASIC_AUTH_PASSWORD", env)
             self.assertNotIn("PIXELFLUX_CU", env)
             self.assertNotIn("VIEWONLY_PASSWORD", env)
             self.assertNotIn("SUBFOLDER", env)

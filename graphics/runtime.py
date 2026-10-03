@@ -1,6 +1,5 @@
 #!/usr/bin/python3
 """Opt-in, container-owned graphics lifecycle. Never launches Chrome."""
-import base64
 import ctypes
 import json
 import os
@@ -45,15 +44,8 @@ def config(environ):
     port = environ.get("DSH_GRAPHICS_PORT", "8080")
     if not re.fullmatch(r"[0-9]{4,5}", port) or not 1024 <= int(port) <= 65535 or int(port) == 3080:
         raise ValueError("DSH_GRAPHICS_PORT must be 1024..65535, excluding DSH port 3080")
-    secret_file = environ.get("DSH_GRAPHICS_PASSWORD_FILE", "")
-    if not os.path.isabs(secret_file):
-        raise ValueError("DSH_GRAPHICS_PASSWORD_FILE must name an absolute readable secret file")
-    with open(secret_file, encoding="utf-8") as secret:
-        password = secret.read(4098).removesuffix("\n")
-    if not 12 <= len(password) <= 4096 or any(c in password for c in "\r\n\0"):
-        raise ValueError("graphics password must be 12..4096 characters on one line")
     root = Path(f"/tmp/dsh-graphics-{display[1:]}")
-    return display, initial, maximum, int(port), password, root
+    return display, initial, maximum, int(port), root
 
 
 def command(argv, env, timeout=3, input_text=None):
@@ -74,13 +66,10 @@ def audio_ready(env):
     return "output.monitor" in command(["pactl", "list", "short", "sources"], env)
 
 
-def viewer_ready(port, password):
-    token = base64.b64encode(f"dsh:{password}".encode()).decode()
-    request = urllib.request.Request(f"http://127.0.0.1:{port}/",
-                                     headers={"Authorization": f"Basic {token}"})
-    # Never honor proxy variables for internal readiness or send credentials to a proxy.
+def viewer_ready(port):
+    # Viewer trusts authenticated proxy/tunnel access, never a direct public bind.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(request, timeout=2) as response:
+    with opener.open(f"http://127.0.0.1:{port}/", timeout=2) as response:
         return response.status == 200 and b"<html" in response.read(16384).lower()
 
 
@@ -91,7 +80,7 @@ def streamer_args(port, root):
                   "enable-shared", "enable-collab", "enable-player2", "enable-player3",
                   "enable-player4", "publish-input-devices", "video-fullcolor")
     return ["selkies", "--addr=127.0.0.1", f"--port={port}", "--mode=websockets",
-            "--enable-https=false", "--enable-basic-auth=true", "--basic-auth-user=dsh",
+            "--enable-https=false", "--enable-basic-auth=false|locked",
             "--encoder=h264enc", "--use-cpu=true|locked", "--framerate=30-30",
             "--enable-resize=true", "--audio-device-name=output.monitor",
             "--file-transfers=none", "--enable-clipboard=false", "--uinput-gamepad=false",
@@ -185,11 +174,11 @@ class Runtime:
 def run(arguments):
     if os.geteuid() == 0:
         raise RuntimeError("graphics must run as a non-root runtime UID")
-    display, initial, maximum, port, password, root = config(os.environ)
+    display, initial, maximum, port, root = config(os.environ)
     if arguments == ["--check-graphics"]:
         with open(root / "environment.json", encoding="utf-8") as manifest:
             env = {**os.environ, **json.load(manifest)["environment"]}
-        if not audio_ready(env) or not viewer_ready(port, password):
+        if not audio_ready(env) or not viewer_ready(port):
             raise RuntimeError("graphics readiness check failed")
         log(f"ready: display={display} geometry={geometry(env)} viewer=127.0.0.1:{port}")
         return 0
@@ -245,9 +234,8 @@ def run(arguments):
                                  "/opt/deepseek-harness/graphics/openbox.xml"], env)
         runtime.wait_ready("Openbox window ownership", lambda: bool(re.search(
             r"window id # 0x[0-9a-f]+", command(["xprop", "-root", "_NET_SUPPORTING_WM_CHECK"], env))))
-        env["SELKIES_BASIC_AUTH_PASSWORD"] = password
         runtime.spawn("Selkies", streamer_args(port, root), env)
-        runtime.wait_ready("authenticated viewer HTTP (not media)", lambda: viewer_ready(port, password))
+        runtime.wait_ready("loopback viewer HTTP (not media)", lambda: viewer_ready(port))
         manifest = {"environment": environment, "viewer_url": f"http://127.0.0.1:{port}/",
                     "websocket_url": f"ws://127.0.0.1:{port}/api/websockets",
                     "maximum_resolution": list(maximum), "pids": {label: child.pid for label, child in runtime.children}}

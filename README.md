@@ -150,12 +150,13 @@ On Unraid, set *Repository* to `ghcr.io/prv-ctech/deepseek-harness-plus:latest`.
 
 Pinned native Selkies 2.0.0, Xvfb with X authentication, PulseAudio and minimal
 Openbox support headed Chrome without GPU/host display. CPU H.264 over
-WebSockets with 4:2:0, authenticated loopback viewer; no new published port.
+WebSockets with 4:2:0, loopback-only viewer; no new published port. Viewer
+access must stay behind Pangolin/proxy authentication; no extra Selkies login.
 Runtime starts no Chrome: future plugin owns browser launch/control, and DSH
 viewer integration is out of scope. Existing graphics-disabled/headless startup
 is unchanged.
 
-Set `DSH_GRAPHICS_ENABLED=true` only after provisioning an owned password file;
+Set `DSH_GRAPHICS_ENABLED=true` on Plus; no password file is required;
 see [runtime configuration, exact isolated build/smoke commands, pending live
 acceptance and plugin handoff](<docs/selkies.md>). Do not apply examples to an
 active deployment without approval. Selkies package alone reports 282455 KiB

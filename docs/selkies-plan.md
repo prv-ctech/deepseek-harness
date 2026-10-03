@@ -29,3 +29,7 @@ TDD Route: mode off; decision skipped; authority session setting; post-change re
 - HTTP health is liveness only. Actual decoded media and keyboard/mouse plus CDP same-browser identity require live acceptance, not mocks.
 
 Inline execution; tasks share runtime contract, so serialize implementation. Stop for scope/security/owner drift; retain pending external verification rather than weakening hardening. No existing owner retired; runtime rollback is DSH_GRAPHICS_ENABLED=false.
+
+## User-approved auth amendment
+
+User requested removal of the separate viewer password because access is under Pangolin authentication. This supersedes viewer-secret/Basic-auth portions above: no password file/extra login, explicit locked Basic-auth false, loopback/no published viewer ports unchanged; Xauth and Unix audio authentication stay. Pangolin must cover viewer HTTP/WS route, not merely DSH; automatic embedding/proxy remains future plugin work. Test relay uses host-local stdio forwarding plus SSH, never unauthenticated container-IP listener. Delete obsolete secret configuration/test provisioning (not user files), regress no-password readiness/loopback/override sanitization, and review before authorized main merge/push. Python interpreter/dependency installation is unchanged. TDD mode off; changes reduce lifecycle/config surface. Docker/live-media acceptance and codec redistribution review remain pending.
