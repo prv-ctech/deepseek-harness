@@ -94,7 +94,7 @@ requests, so it is not optional.
 | `DSH_WORKSPACE_DIR` | `/workspace` | Directory chowned at start |
 | `DSH_BIND` / `DSH_PORT` | `0.0.0.0` / `3080` | Host side of the published port |
 | `DSH_WORKSPACE` | `./workspace` | Host path mounted at `/workspace` |
-| `DSH_IMAGE` | `ghcr.io/prv-ctech/deepseek-harness:latest` | Image Compose runs; set the `-plus` tag for the browser + toolchain variant |
+| `DSH_IMAGE` | `ghcr.io/prv-ctech/deepseek-harness:latest` | Image Compose runs; set the `-plus` tag for the toolchain variant |
 
 ### The sandbox
 
@@ -134,12 +134,12 @@ reason — it points the cache at a real filesystem so you can keep `noexec /tmp
 
 ## The `-plus` image
 
-`ghcr.io/prv-ctech/deepseek-harness-plus` is **the base image plus two layers**:
-a real browser, and the toolchain a plugin, a task or the MCP configuration can
-discover instead of downloading into the state volume on every deployment.
-`INSTALL_PLUS=true` selects both layers, so they cannot drift apart. Same
-entrypoint, same patch, same hardening, same ports, same state volume —
-switching is one variable:
+`ghcr.io/prv-ctech/deepseek-harness-plus` is **the base image plus the toolchain**
+a plugin, a task or the MCP configuration can discover instead of downloading
+into the state volume on every deployment: Python, the Android RE tools, and
+`codebase-memory-mcp`. `INSTALL_PLUS=true` selects that layer. Same entrypoint,
+same patch, same hardening, same ports, same state volume — switching is one
+variable:
 
 ```sh
 DSH_IMAGE=ghcr.io/prv-ctech/deepseek-harness-plus:latest docker compose up -d
@@ -147,47 +147,17 @@ DSH_IMAGE=ghcr.io/prv-ctech/deepseek-harness-plus:latest docker compose up -d
 
 On Unraid, set *Repository* to `ghcr.io/prv-ctech/deepseek-harness-plus:latest`.
 
-### A real browser
-
-Google Chrome at the system level, from Google's apt repository
-(`/usr/bin/google-chrome-stable`). It exists because a plugin that drives a real
-browser — `dsh-realbrowser`, or anything else that speaks CDP — otherwise
-downloads a browser into the state volume, and that copy cannot run here: the
-base image ships neither Chrome's shared libraries nor any font, so it fails at
-`ldd` and aborts on its first page.
-
-- **The image copy wins the lookup.** The plugin resolves
-  `google-chrome-stable` by name from `PATH` before it considers a downloaded
-  one, so `/usr/bin/google-chrome-stable` is used and the volume store becomes a
-  fallback only. The Chrome version therefore follows the image build —
-  deliberate: one artefact, one Chrome, no per-deployment browser download.
-- **No browser flags are added by this image.** The entrypoint passes none; the
-  plugin already passes `--no-sandbox --disable-dev-shm-usage --no-first-run
-  --no-default-browser-check`, plus `--remote-debugging-port` and a
-  `--user-data-dir` under the state volume.
-- **The hardened runtime is unchanged, and the build's smoke test exercises
-  Chrome under it**: `--read-only`, `--cap-drop ALL`, `no-new-privileges` and
-  `noexec /tmp` all stay. Chrome never needs to execute anything from `/tmp`;
-  its only writable paths are the state volume (profile) and `/tmp`.
-- **Fontconfig and a font set are installed explicitly** rather than left to
-  Chrome's own dependency list. Under `--no-install-recommends` a missing
-  fontconfig makes Chrome abort with
-  `FATAL: SkFontMgr_FontConfigInterface.cpp Not implemented` and signal 6 on any
-  page containing a `<form>` — which surfaces misleadingly as
-  `WebSocket closed: 1006`. Latin-only is not enough to browse either: without
-  the non-Latin families a Japanese, Korean, Chinese or Arabic page draws tofu,
-  silently. So the image ships `fonts-noto-core` (Arabic, Hebrew, Devanagari,
-  Thai, ~60 scripts), `fonts-noto-cjk` (Japanese, Korean, Simplified and
-  Traditional Chinese), `fonts-noto-color-emoji`, plus `fonts-dejavu-core`, the
-  family fontconfig's own `latin.conf` prefers. The smoke test asserts one
-  coverage per package — `fc-list :lang=ja`, `:lang=ar`, `:charset=1f600` — so
-  dropping a font package fails the build, not the user's page.
-- **Cost**: Chrome adds roughly 150–250 MB and the font set about 145 MB more
-  (~89 MB of that `fonts-noto-cjk`).
-
 It exists for one reason: **plugins and tasks can detect these tools instead of
-downloading them into the state volume on every deployment**. Five additions —
-the browser above, and:
+downloading them into the state volume on every deployment**. Three additions —
+and one absence:
+
+> **No browser ships in either variant.** A previous revision installed Google
+> Chrome from Google's apt repository, together with the fontconfig and
+> Noto/DejaVu font packages it needs to render a page; that layer is gone. A
+> plugin that drives a browser — `dsh-realbrowser`, or anything else that speaks
+> CDP — now has to bring its own browser *and* its runtime libraries and fonts,
+> because nothing in this image provides them: a browser downloaded into the
+> state volume will fail at `ldd` and abort on its first page.
 
 ### Python
 
@@ -211,29 +181,6 @@ Two constraints are real, so read this before you `pip install` something:
   call. `pip install --user` is the install that works from in there, and it
   lands under `$HOME`, which is the state volume. Anything that must outlive a
   session should be preinstalled — which is why `androguard` is baked in.
-
-### rtk
-
-[rtk](https://github.com/rtk-ai/rtk) is a single static Rust binary that
-rewrites a command and filters its output, cutting 60–90% off the token cost of
-common dev commands. `rtk` v0.50.0 is installed at `/usr/local/bin/rtk`, from
-the release's **musl tarball** with its sha256 pinned in the Dockerfile — not
-from the `.deb` the same release publishes, which declares `libc6 (>= 2.39)`
-while bookworm ships 2.36 and would fail the build.
-
-The contract plugins depend on is `rtk rewrite "<command>"`: exit **3** with
-the rewritten command on stdout when there is an equivalent, exit **1** with
-nothing when there is not. The smoke test asserts both, because rtk's own
-`--help` says it "exits 0" and that is not what it does.
-
-> **`dsh-pwsh-rtk-rewrite` does not activate on this image.** That plugin
-> replaces the **PowerShell** executor, and its own `cordis.patch.yml` disables
-> it on non-Windows (`disabled: !!js process.platform !== 'win32'`), so on Linux
-> it is a deliberate no-op rather than a broken install. What the image
-> guarantees is the other half: `rtk` is on `PATH` for the agent and for any
-> plugin that probes for it, so `rtk read`, `rtk grep`, `rtk ls` and `rtk git …`
-> work from a shell call today, and a bash-executor rewrite plugin would work
-> against them unchanged.
 
 ### Android reverse engineering
 
@@ -328,9 +275,8 @@ Three things about the install are not obvious:
 
 - **The portable tarball — the fully static build** (`ldd` reports "not a dynamic
   executable") — not the platform tarball the same release publishes. That one
-  is linked against its builder's glibc; the static one runs regardless, which
-  is the same reason rtk comes from its musl tarball. The sha256 is pinned in
-  the Dockerfile from the release's own `checksums.txt`.
+  is linked against its builder's glibc; the static one runs regardless. The
+  sha256 is pinned in the Dockerfile from the release's own `checksums.txt`.
 - **Installed byte-for-byte as upstream publishes it.** The binary is unstripped
   (~286 MB on disk) and stays that way, so the release's checksums and
   attestations still describe exactly what runs.
@@ -348,15 +294,14 @@ Three things about the install are not obvious:
   into the workspace instead, which is inside the sandbox's writable roots
   anyway.
 
-**Cost**: roughly 1 GB over the base image — Chrome plus fonts (~300–400 MB),
-the JRE (188 MB), `codebase-memory-mcp` (286 MB), jadx (~80 MB),
-`android-framework-res` (~45 MB), Python, androguard's dependency tree, and the
-Java libraries apktool pulls.
+**Cost**: roughly 600–700 MB over the base image — the JRE (188 MB),
+`codebase-memory-mcp` (286 MB), jadx (~80 MB), `android-framework-res` (~45 MB),
+Python, androguard's dependency tree, and the Java libraries apktool pulls.
 
 **The hardened runtime is unchanged.** Every one of these tools reads the APK and
 writes under `$HOME` or the workspace; nothing execs from `/tmp`, so
 `--read-only`, `--cap-drop ALL`, `no-new-privileges` and a `noexec /tmp` all
-keep working. The smoke test runs jadx, rtk, androguard and a
+keep working. The smoke test runs jadx, androguard and a
 `pip install --dry-run` as the unprivileged `PUID` under exactly those flags, a
 real two-file index through `codebase-memory-mcp` as that same uid (which is
 also what proves the redirected cache root is writable), and `--version` of the
@@ -411,9 +356,9 @@ restart**, so a 401 after a restart means: re-read the log line. A 403 means the
 
 ## What this image is not
 
-- **No desktop.** The base image ships no browser at all; the `-plus` image
-  ships Chrome and its runtime libraries, but no desktop and no noVNC. The GUI's
-  browser view is a CDP screencast, not a virtual desktop.
+- **No desktop.** Neither variant ships a browser any more, and there is no
+  desktop and no noVNC in either. A browser panel served by a plugin is a CDP
+  screencast against a browser that plugin supplies, not a virtual desktop.
 - **Not a TLS terminator.** Put it behind a proxy that does TLS.
 - **No `Secure` cookie, no security headers** — upstream cannot, so the proxy
   must. See above.
@@ -477,8 +422,7 @@ scripts/published-recipe.sh   recipe label lookup used by the workflow
 
 Nothing to merge. When a new RC is published the workflow builds, smoke-tests
 (version equality, PID-1/uid drop, the launch-token gate, and — for `-plus` —
-a real headless launch under the hardened flags, Python, rtk's rewrite
-contract, every Android tool on `PATH`, a real jadx and apktool decode of a
+Python, every Android tool on `PATH`, a real jadx and apktool decode of a
 real APK, and a real codebase-memory-mcp index) and pushes it. The seams this
 repo uses are upstream's own, so they move with it. The one thing to re-check
 on a major release is the `webserver` row's config keys: a

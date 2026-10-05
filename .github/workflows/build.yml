@@ -219,10 +219,8 @@ jobs:
 
       # Smoke test the built image in the posture the README documents: a
       # published port, a state volume, and the launch-token gate answering.
-      # The plus variant adds the checks that decide whether a browser can
-      # start at all, then a real launch under the hardened runtime, plus
-      # Python, rtk, an APK decompiled to Java source and a real
-      # codebase-memory-mcp index.
+      # The plus variant adds the hardened-runtime checks, plus Python, an APK
+      # decompiled to Java source and a real codebase-memory-mcp index.
       - name: Smoke test ${{ matrix.repository }}:${{ matrix.version }}
         env:
           VERSION: ${{ matrix.version }}
@@ -272,38 +270,20 @@ jobs:
           echo "index status: $code"
           printf '%s' "$code" | grep -qE '^(200|303|401)$'
 
-          # --- browser -------------------------------------------------------
-          # A browser is only shippable from here if it starts under the
-          # hardened runtime, so these run in order: the three checks that
-          # decide whether Chrome can start at all, then a real launch in the
-          # documented posture, with the flags the plugin passes. Selected by
-          # $PLUS — the plus image is the only one that ships a browser — and
-          # the else branch asserts Chrome is ABSENT from the base image.
-          if [ "$PLUS" = "true" ]; then
-            chrome_version=$(docker exec "$name" google-chrome-stable --version)
-            echo "chrome: $chrome_version"
-            printf '%s' "$chrome_version" | grep -qi 'Google Chrome'
-            # One missing shared library is an immediate abort, and the message
-            # names the library, never the package that should have shipped it.
-            test -z "$(docker exec "$name" sh -c 'ldd /opt/google/chrome/chrome | grep "not found" || true')"
-            # Without fontconfig, Chrome dies on font loading with
-            # "FATAL: SkFontMgr_FontConfigInterface.cpp Not implemented" and
-            # signal 6 — which reaches the plugin as a closed CDP websocket.
-            docker exec "$name" test -f /etc/fonts/fonts.conf
-            # ...and the fonts themselves, by coverage rather than by path: a
-            # missing Japanese or Arabic family draws tofu, it does not error,
-            # so nothing else here would notice. fc-list filters on what the
-            # installed fonts actually cover, which makes an empty result the
-            # failure — one query per font package, so dropping any of them
-            # fails the build.
-            docker exec "$name" sh -c 'test -n "$(fc-list :lang=ja)"'      # fonts-noto-cjk
-            docker exec "$name" sh -c 'test -n "$(fc-list :lang=ar)"'      # fonts-noto-core
-            docker exec "$name" sh -c 'test -n "$(fc-list :charset=1f600)"' # fonts-noto-color-emoji
+          # No variant ships a browser or rtk any more, so a stray copy would
+          # change the image's size and its attack surface unseen. Written as
+          # positive `test`s, not `! command -v`: that would also pass when the
+          # exec itself failed.
+          docker exec "$name" test ! -e /usr/bin/google-chrome-stable
+          docker exec "$name" test ! -d /opt/google/chrome
+          docker exec "$name" test ! -e /usr/local/bin/rtk
 
-            # compose.yaml's posture, including the five capabilities the
-            # entrypoint's chown/setpriv path needs; everything else is dropped.
-            # Boots dsh too, so it also proves that path survives --read-only.
-            # noexec /tmp is safe: Chrome never execs from there.
+          # --- hardened runtime -----------------------------------------------
+          # compose.yaml's posture, including the five capabilities the
+          # entrypoint's chown/setpriv path needs; everything else is dropped.
+          # Boots dsh too, so it also proves that path survives --read-only.
+          # Selected by $PLUS: only the plus image ships the tools below.
+          if [ "$PLUS" = "true" ]; then
             docker run -d --name "$hardened" \
               --read-only --cap-drop ALL --security-opt no-new-privileges:true \
               --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
@@ -316,44 +296,12 @@ jobs:
             done
             docker inspect --format '{{.State.Health.Status}}' "$hardened" | grep -q healthy
 
-            # The volume holds no browser, so the resolver the plugin uses can
-            # only be finding the image's own /usr/bin/google-chrome-stable.
-            docker exec "$hardened" test ! -e /home/node/.dsh/realbrowser/browser
-            docker exec -u 1000:1000 "$hardened" mkdir -p /home/node/.dsh/realbrowser
-
-            # Exactly the plugin's flags. Runs as the runtime uid, like dsh
-            # would: a browser that only works as root is not usable here. No
-            # LD_LIBRARY_PATH and no FONTCONFIG_FILE are set anywhere.
-            docker exec -u 1000:1000 -d "$hardened" sh -c "google-chrome-stable \
-              --headless --no-sandbox --disable-dev-shm-usage --no-first-run \
-              --no-default-browser-check --remote-debugging-port=9222 \
-              --user-data-dir=/home/node/.dsh/realbrowser/browser \
-              'data:text/html,<form><input name=q></form>' \
-              > /home/node/.dsh/chrome.log 2>&1"
-
-            # CDP is the plugin's transport, and /json/list holds the page
-            # target — which only exists once the renderer has committed the
-            # form page, the font path that aborts on a missing fontconfig.
-            # Polled, then asserted once more, so a timeout fails with the real
-            # command instead of a bare loop exit.
-            cdp() { docker exec "$hardened" node -e \
-              "fetch('http://127.0.0.1:9222/$1').then(r=>r.json()).then(v=>process.exit($2)).catch(()=>process.exit(1))"; }
-            cdp_until() { for _ in $(seq 1 20); do cdp "$1" "$2" && return 0; sleep 1; done; cdp "$1" "$2"; }
-            cdp_until json/version '/Chrome\//.test(v.Browser)?0:1'
-            cdp_until json/list 'v.some(t=>/^data:text\/html/.test(t.url))?0:1'
-            if docker exec "$hardened" grep -qE 'signal 6|FATAL' /home/node/.dsh/chrome.log; then
-              docker exec "$hardened" cat /home/node/.dsh/chrome.log
-              echo "::error::Chrome aborted under the hardened runtime"
-              exit 1
-            fi
-
-            # ...and the plus toolchain under the same posture, as the runtime
-            # uid. A JVM start and a Python import both need a writable /tmp
-            # and a writable HOME, which is precisely what this posture
-            # narrows; if either failed here the tool would be useless in the
-            # deployment the README documents.
+            # The plus toolchain under the same posture, as the runtime uid. A
+            # JVM start and a Python import both need a writable /tmp and a
+            # writable HOME, which is precisely what this posture narrows; if
+            # either failed here the tool would be useless in the deployment
+            # the README documents.
             docker exec -u 1000:1000 "$hardened" jadx --version
-            docker exec -u 1000:1000 "$hardened" rtk --version
             docker exec -u 1000:1000 "$hardened" python3 -c 'import androguard'
             # Proves the PEP 668 override reaches the runtime, not just the
             # build: pip 23.0.1 runs its externally-managed check on
@@ -368,13 +316,6 @@ jobs:
             # contract being checked.
             docker exec -u 1000:1000 "$hardened" \
               /home/node/.local/bin/codebase-memory-mcp --version
-          else
-            # The base package is the one that promises no browser stack, so a
-            # stray Chrome would change its size and its attack surface unseen.
-            # Written as a positive `test`, not `! command -v`: that would also
-            # pass when the exec itself failed.
-            docker exec "$name" test ! -e /usr/bin/google-chrome-stable
-            docker exec "$name" test ! -d /opt/google/chrome
           fi
 
           # --- plus variant ---------------------------------------------------
@@ -389,16 +330,6 @@ jobs:
             # An import, not a pip list line: it is the strongest cheap proof
             # that the preinstalled analysis stack is actually importable.
             docker exec "$name" python3 -c 'import androguard; print(androguard.__version__)'
-
-            # rtk's plugin contract, as measured on 0.50.0: a rewritable
-            # command exits 3 with the rewritten command on stdout, while a
-            # command rtk has no equivalent for exits 1 and prints nothing. The
-            # plugin keys off exactly that, and its own --help says "exits 0",
-            # so the code is asserted rather than assumed.
-            docker exec "$name" sh -c 'out=$(rtk rewrite "cat /etc/hostname"); rc=$?
-              test "$rc" = 3 || { echo "rtk rewrite exit: $rc"; exit 1; }
-              echo "$out"' | grep -qx 'rtk read /etc/hostname'
-            docker exec "$name" sh -c 'rtk rewrite "echo x" >/dev/null; test $? = 1'
 
             for tool in jadx apktool aapt aapt2 dexdump apksigner zipalign \
                         smali baksmali enjarify; do
@@ -457,9 +388,8 @@ jobs:
 
           # The base package promises none of the -plus payload, so
           # a layer that leaked it would change its size and its attack
-          # surface unseen. Same positive-`test` rule as the browser check above.
+          # surface unseen. Same positive-`test` rule as the checks above.
           if [ "$PLUS" != "true" ]; then
-            docker exec "$name" test ! -e /usr/local/bin/rtk
             docker exec "$name" test ! -e /opt/jadx
             docker exec "$name" test ! -e /usr/bin/apktool
             docker exec "$name" test ! -e /usr/bin/smali

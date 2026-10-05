@@ -53,88 +53,38 @@ RUN npm install --global --omit=dev --no-audit --no-fund \
 # version this image claims to be.
 RUN test "$(dsh --version)" = "${DSH_VERSION}"
 
-# Browser layer of the "+" variant: a system Chrome, installed from Google's
-# own apt repo, so it is a real package at
-# /usr/bin/google-chrome-stable: dsh-realbrowser's resolver finds a browser by
-# name before any copy it downloads into the state volume, which makes that
-# downloaded copy a fallback only. Chrome's version therefore follows the image
-# build — bumping Chrome means rebuilding the image, which is the intended
-# ownership model.
-#
-# fontconfig and fonts-liberation are named explicitly even though Chrome
-# usually pulls them in: under --no-install-recommends a missing font makes
-# Chrome abort with "FATAL:SkFontMgr_FontConfigInterface.cpp Not implemented"
-# and signal 6 on any page containing a <form>, which surfaces misleadingly as
-# "WebSocket closed: 1006". Listing them keeps that true regardless of what
-# Chrome declares today.
-#
-# Latin-only is not enough to browse either: with just fonts-liberation a page
-# in Japanese, Chinese, Korean or Arabic draws tofu — the glyphs are absent, so
-# nothing errors and nothing renders. The Noto sets go in for that reason
-# (noto-core covers Arabic, Hebrew, Devanagari, Thai and ~60 more scripts;
-# noto-cjk covers Japanese, Korean and Simplified/Traditional Chinese;
-# noto-color-emoji covers emoji), plus fonts-dejavu-core, the family
-# fontconfig's own latin.conf prefers. Cost is roughly 145 MB installed, ~89 MB
-# of it noto-cjk, and the smoke test asserts a representative coverage per
-# package so a dropped font fails the build instead of a user's page.
-#
-# The hardened runtime is unaffected: nothing here needs exec from /tmp, so
-# --read-only, --cap-drop ALL, no-new-privileges and a noexec /tmp all keep
-# working. No browser flag belongs here either — the caller passes --no-sandbox,
-# --disable-dev-shm-usage and the remote-debugging port, not the image.
+# No browser ships in this image. A previous revision installed Google Chrome
+# from Google's apt repo — with fontconfig and the Noto/DejaVu font sets it
+# needs to render a page — so that dsh-realbrowser would resolve a system binary
+# from PATH; that layer is gone. A browser-driving plugin now has to supply its
+# own browser *and* its runtime libraries: nothing here provides either, so a
+# downloaded Chrome-for-Testing will not start on this image.
 ARG INSTALL_PLUS=false
 LABEL com.prvctech.dsh.plus="${INSTALL_PLUS}"
-RUN if [ "$INSTALL_PLUS" = "true" ]; then \
-      set -eux; \
-      apt-get update; \
-      apt-get install -y --no-install-recommends ca-certificates curl gnupg; \
-      install -d -m 0755 /etc/apt/keyrings; \
-      curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
-        | gpg --dearmor -o /etc/apt/keyrings/google-chrome.gpg; \
-      echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" \
-        > /etc/apt/sources.list.d/google-chrome.list; \
-      apt-get update; \
-      apt-get install -y --no-install-recommends \
-        google-chrome-stable fontconfig \
-        fonts-liberation fonts-dejavu-core \
-        fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji; \
-      apt-get purge -y --auto-remove gnupg; \
-      rm -rf /var/lib/apt/lists/*; \
-    fi
 
 # Optional "+" variant, published as `deepseek-harness-plus` (--build-arg
-# INSTALL_PLUS=true). It is the base image plus the browser layer above and
-# four things a plugin, a task or the MCP configuration can discover instead of
-# downloading into the state volume:
+# INSTALL_PLUS=true). It is the base image plus three things a plugin, a task or
+# the MCP configuration can discover instead of downloading into the state
+# volume:
 #
 #   1. Python 3.11 + pip, so a tool that probes for `python3` finds one. Plugins
 #      are npm packages, but everything they shell out to — analysis scripts,
 #      androguard, a decompiler's helper — is usually Python.
-#   2. rtk, the token-saving output filter (github.com/rtk-ai/rtk).
-#   3. The Android RE toolchain: jadx, apktool, smali/baksmali, enjarify, aapt,
+#   2. The Android RE toolchain: jadx, apktool, smali/baksmali, enjarify, aapt,
 #      dexdump, apksigner, zipalign.
-#   4. codebase-memory-mcp (github.com/DeusData/codebase-memory-mcp), the code
+#   3. codebase-memory-mcp (github.com/DeusData/codebase-memory-mcp), the code
 #      intelligence MCP server, on PATH and at the path the MCP configuration
 #      runs it from.
 #
-# The browser layer and this layer are one variant: INSTALL_PLUS=true selects
-# both, so they cannot drift apart.
-#
-# Cost: roughly 1 GB over the base image. openjdk-17-jre-headless alone
-# is 188 MB installed, and that JVM is not optional dressing — jadx, apktool,
-# smali and apksigner are all Java, so one shared JRE is cheaper than four.
-# codebase-memory-mcp is another 286 MB on its own.
+# Cost: roughly 600–700 MB over the base image, the browser and font layers
+# having been removed. openjdk-17-jre-headless alone is 188 MB installed, and
+# that JVM is not optional dressing — jadx, apktool, smali and apksigner are all
+# Java, so one shared JRE is cheaper than four. codebase-memory-mcp is another
+# 286 MB on its own.
 #
 # Version pins are ARGs, not hardcoded strings, so a rebuild of an existing DSH
 # release can move them without touching this layer; each pin is restated with
 # the evidence that justifies it.
-#
-# rtk: the musl tarball, not the .deb the same release publishes. The .deb
-# declares `libc6 (>= 2.39)`; bookworm ships glibc 2.36, so `dpkg -i` would fail
-# the build. The musl build is statically linked (verified: `ldd` reports "not a
-# dynamic executable"), which also keeps it independent of the base image. The
-# checksum is the one in the release's own checksums.txt for this exact asset, so
-# a swapped upload fails here rather than at first use.
 #
 # jadx: 1.5.6 is the newest stable release. Upstream ships no checksums, so this
 # layer verifies by running it — `jadx --version` must answer, which also proves
@@ -170,8 +120,8 @@ RUN if [ "$INSTALL_PLUS" = "true" ]; then \
 #
 # codebase-memory-mcp: the portable tarball — the fully static build (`ldd`
 # reports "not a dynamic executable"), so it runs whatever glibc the base image
-# ships, the same reason rtk comes from its musl tarball. The checksum is the
-# release's own checksums.txt entry for this exact asset. It is installed at
+# ships. The checksum is the release's own checksums.txt entry for this exact
+# asset. It is installed at
 # /usr/local/bin/codebase-memory-mcp — image-owned, on PATH, and not shadowable
 # by a volume mount or by a $HOME the runtime uid does not own — with
 # /home/node/.local/bin/codebase-memory-mcp symlinked to it. The MCP
@@ -188,8 +138,6 @@ RUN if [ "$INSTALL_PLUS" = "true" ]; then \
 # writes under $HOME or the workspace. Nothing here execs from /tmp, so
 # --read-only, --cap-drop ALL, no-new-privileges and a noexec /tmp all keep
 # working.
-ARG RTK_VERSION=0.50.0
-ARG RTK_SHA256=bc2b8902b0d9c796c82ef45f16ae2307e17757afeca5ee156235a3dc7bda5f89
 ARG JADX_VERSION=1.5.6
 ARG ANDROGUARD_VERSION=4.1.4
 ARG CBM_VERSION=0.11.0
@@ -203,11 +151,6 @@ RUN if [ "$INSTALL_PLUS" = "true" ]; then \
         openjdk-17-jre-headless \
         apktool aapt dexdump apksigner zipalign enjarify \
         unzip file; \
-      curl -fsSLo /tmp/rtk.tar.gz \
-        "https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}/rtk-x86_64-unknown-linux-musl.tar.gz"; \
-      echo "${RTK_SHA256}  /tmp/rtk.tar.gz" | sha256sum -c -; \
-      tar -xzf /tmp/rtk.tar.gz -C /usr/local/bin rtk; \
-      chmod 0755 /usr/local/bin/rtk; \
       curl -fsSLo /tmp/jadx.zip \
         "https://github.com/skylot/jadx/releases/download/v${JADX_VERSION}/jadx-${JADX_VERSION}.zip"; \
       unzip -q /tmp/jadx.zip -d /opt/jadx; \
@@ -227,7 +170,7 @@ RUN if [ "$INSTALL_PLUS" = "true" ]; then \
       for tool in aapt aapt2 dexdump apksigner zipalign; do \
         ln -s "/usr/lib/android-sdk/build-tools/debian/${tool}" "/usr/local/bin/${tool}"; \
       done; \
-      rm -f /tmp/rtk.tar.gz /tmp/jadx.zip /tmp/cbm.tar.gz; \
+      rm -f /tmp/jadx.zip /tmp/cbm.tar.gz; \
       rm -rf /var/lib/apt/lists/* /root/.cache; \
     fi
 
