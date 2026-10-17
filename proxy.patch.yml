@@ -1,33 +1,29 @@
 # Launcher patch layer for containerized `dsh web` (passed via --patch).
 #
-# Upstream's CLI refuses `--host 0.0.0.0` on purpose
-# (packages/bundle/web-app/src/startup.ts: `--host 0.0.0.0 is intentionally not
-# supported yet for safety`), but the webserver plugin's schema accepts exactly
-# '127.0.0.1' | '0.0.0.0'. This file is the supported opt-in. Inside a container
-# an all-interfaces bind is only reachable through ports you publish on the
-# Docker host, which is what makes the reverse proxy (Pangolin/newt) able to
-# reach it — a 127.0.0.1 bind is invisible to it.
+# This file carries the plugin below, not the listener. There is no `webserver`
+# row here, and that is deliberate: since 0.2.1 the webserver schema accepts one
+# concrete interface address and rejects `0.0.0.0` outright, because an
+# all-interfaces listener exposes remote code execution on every interface the
+# operator did not mean to publish. The bind therefore comes from upstream's own
+# `--host` flag, which the entrypoint sets to the address the container actually
+# has (bin/dsh-bind-host). A patch cannot carry it either way: a layer REPLACES
+# the whole config of the row it names and `host` has no default, so restating
+# only `port` fails with `$.host missing required value` — verified against
+# 0.2.1-rc.2. Nothing is lost: the composed row already defaults port 3080 and
+# gzip compression.
 #
-# A patch layer REPLACES the whole config of the row it names (verified: a
-# host-only patch dies with `$.port missing required value`). Overlays are also
-# parsed as literal YAML — `!!js` tags are rejected ("unknown tag !<tag:yaml.org,
-# 2002:js>"), so the bundle's `ctx.webStartup.*` expressions cannot be reused
-# here and every key the row owns is restated below.
-- id: webserver
-  config:
-    host: 0.0.0.0
-    port: 3080
-    compression: gzip
-    compressionLevel: 1
-    compressionThresholdBytes: 1024
-
+# 0.2.0-rc.2 has the opposite schema — '127.0.0.1' | '0.0.0.0' only — and is
+# served by `proxy-wildcard.patch.yml`, which the entrypoint selects by version.
+#
 # `trustedHosts` is deliberately NOT patched. The public FQDN travels through
 # upstream's own repeatable `--trusted-host` flag (passed by the entrypoint from
-# $DSH_PUBLIC_HOST), which the web-app bundle already feeds into both the
-# `web-runtime` row and the `connection` row
+# $DSH_PUBLIC_HOST), which the web-app bundle feeds into the `connection` row
 # (packages/bundle/web-app/cordis.patch.yml: `trustedHosts: !!js
-# ctx.webRuntime.trustedHosts`). LAN IP literals are derived automatically from
-# the all-interfaces bind, so only the external authority needs naming.
+# ctx.webStartup.trustedHosts`). The `/api` fence also accepts the listener's
+# own bind address (0.2.1: `isBindAddressAuthority`), so with host networking —
+# where the bind address *is* the host's LAN address — browsing by IP needs no
+# naming. Under bridge networking the address a browser uses is the Docker
+# host's, not the container's, so that authority belongs in $DSH_TRUSTED_HOSTS.
 #
 # The plugin makes the remote Settings UI writable and prints the public login
 # URL. Absolute path: the loader rewrites it to `file:///…` beside this patch,

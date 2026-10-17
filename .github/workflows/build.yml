@@ -27,6 +27,8 @@ on:
       - Dockerfile
       - docker-entrypoint.sh
       - proxy.patch.yml
+      - proxy-wildcard.patch.yml
+      - bin/**
       - fix/**
       - scripts/**
       - .github/workflows/build.yml
@@ -72,7 +74,7 @@ jobs:
       - name: Compute recipe hash
         id: recipe
         run: |
-          files='Dockerfile docker-entrypoint.sh proxy.patch.yml fix/owns-host.mjs'
+          files='Dockerfile docker-entrypoint.sh proxy.patch.yml proxy-wildcard.patch.yml bin/dsh-bind-host bin/dsh-healthcheck fix/owns-host.mjs'
           # shellcheck disable=SC2086
           echo "base=$(cat $files | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
           echo "plus=$( { cat $files; echo plus; } | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
@@ -217,10 +219,11 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Smoke test the built image in the posture the README documents: a
-      # published port, a state volume, and the launch-token gate answering.
-      # The plus variant adds the hardened-runtime checks, plus Python, an APK
-      # decompiled to Java source and a real codebase-memory-mcp index.
+      # Smoke test the built image in the posture the README documents: a state
+      # volume, a published port, the listener on the container's own address,
+      # and the launch-token gate answering. The plus variant adds the
+      # hardened-runtime checks, plus Python, an APK decompiled to Java source
+      # and a real codebase-memory-mcp index.
       - name: Smoke test ${{ matrix.repository }}:${{ matrix.version }}
         env:
           VERSION: ${{ matrix.version }}
@@ -238,16 +241,44 @@ jobs:
                       docker volume rm "${name}-state" "${hardened}-state" >/dev/null 2>&1 || true; }
           trap cleanup EXIT
 
+          # Succeed only on the container's own "healthy". The old form ended
+          # with `docker inspect … | grep -q healthy`, and "unhealthy" contains
+          # "healthy" — so a container that never started walked through the gate
+          # and died at the next exec with "container … is not running", hiding
+          # its startup error. Report the logs at the point of failure instead.
+          wait_healthy() {
+            local container=$1 state health info
+            for _ in $(seq 1 40); do
+              info=$(docker inspect --format \
+                '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+                "$container" 2>/dev/null || echo 'missing none')
+              state=${info%% *}
+              health=${info#* }
+              [ "$health" = "healthy" ] && return 0
+              # Exited, restarting or missing: it will never turn healthy.
+              [ "$state" = "running" ] || break
+              [ "$health" = "unhealthy" ] && break
+              sleep 3
+            done
+            echo "::error::$container is '$state' with health '$health' after 120s"
+            docker logs --tail 100 "$container" 2>&1 || true
+            docker inspect --format '{{json .State}}' "$container" 2>&1 || true
+            return 1
+          }
+
           docker run -d --name "$name" -p 127.0.0.1:3080:3080 \
             -v "${name}-state:/home/node/.dsh" "$IMAGE_TAG"
-
-          for _ in $(seq 1 40); do
-            [ "$(docker inspect --format '{{.State.Health.Status}}' "$name" 2>/dev/null)" = "healthy" ] && break
-            sleep 3
-          done
-          docker inspect --format '{{.State.Health.Status}}' "$name" | grep -q healthy
+          wait_healthy "$name"
 
           test "$(docker exec "$name" dsh --version)" = "$VERSION"
+
+          # 0.2.1 rejects the wildcard bind, so the listener sits on the
+          # container's own interface address. A silent loopback fallback would
+          # keep the healthcheck green (it probes the same address) while nothing
+          # a proxy dials answers — the assertion is what rules that out.
+          bind=$(docker exec "$name" dsh-bind-host)
+          echo "dsh bind address: $bind"
+          [ "$bind" != "127.0.0.1" ]
 
           # tini stays PID 1 (uid 0) while dsh itself runs as the unprivileged
           # numeric PUID — the whole point of the entrypoint. The runtime
@@ -264,9 +295,12 @@ jobs:
           echo "dsh uid: $dsh_uid"
           [ "$dsh_uid" = "1000" ]
 
-          # 401 = launch-token gate (0.1.7 behaviour); 303 = token exchange.
-          code=$(docker run --rm --network "container:$name" curlimages/curl \
-            -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3080/)
+          # 401 = launch-token gate; 303 = token exchange. Probed through the
+          # published port on the runner, which is the path a deployment actually
+          # uses. The old probe shared the container's network namespace and hit
+          # its loopback, so it bypassed the port publish and only worked while
+          # the listener was the 0.2.0-rc.2 wildcard.
+          code=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:3080/)
           echo "index status: $code"
           printf '%s' "$code" | grep -qE '^(200|303|401)$'
 
@@ -290,11 +324,13 @@ jobs:
               --cap-add SETGID --cap-add SETUID \
               --tmpfs /tmp:rw,nosuid,nodev,noexec,size=256m \
               -v "${hardened}-state:/home/node/.dsh" "$IMAGE_TAG"
-            for _ in $(seq 1 40); do
-              [ "$(docker inspect --format '{{.State.Health.Status}}' "$hardened" 2>/dev/null)" = "healthy" ] && break
-              sleep 3
-            done
-            docker inspect --format '{{.State.Health.Status}}' "$hardened" | grep -q healthy
+            wait_healthy "$hardened"
+
+            # Nothing else here would catch a loopback fallback: this container
+            # publishes no port, so the healthcheck would agree with the mistake.
+            hbind=$(docker exec "$hardened" dsh-bind-host)
+            echo "hardened bind address: $hbind"
+            [ "$hbind" != "127.0.0.1" ]
 
             # The plus toolchain under the same posture, as the runtime uid. A
             # JVM start and a Python import both need a writable /tmp and a

@@ -1,0 +1,42 @@
+# Launcher patch layer for `dsh` 0.2.0-rc.2 only (passed via --patch).
+#
+# Kept so a rebuild of 0.2.0-rc.2 — a base-image security fix, a moved pin — still
+# produces a booting image. That line's webserver schema accepts exactly
+# '127.0.0.1' | '0.0.0.0', so `--host` cannot name the container's own address:
+# the all-interfaces bind is the only way out of the container, and a patch layer
+# is the only way in. 0.2.1 inverted the contract (concrete address required,
+# wildcard rejected outright), so the entrypoint picks this file for versions
+# before 0.2.1 and `proxy.patch.yml` after it.
+#
+# Retirement: delete this file, its Dockerfile COPY, its recipe-hash entry and
+# the entrypoint's version gate once 0.2.0-rc.2 leaves the workflow's
+# MIN_VERSION — after that, no tracked version needs the wildcard bind.
+#
+# A patch layer REPLACES the whole config of the row it names (verified: a
+# host-only patch dies with `$.port missing required value`). Overlays are also
+# parsed as literal YAML — `!!js` tags are rejected ("unknown tag !<tag:yaml.org,
+# 2002:js>"), so the bundle's `ctx.webStartup.*` expressions cannot be reused
+# here and every key the row owns is restated below.
+- id: webserver
+  config:
+    host: 0.0.0.0
+    port: 3080
+    compression: gzip
+    compressionLevel: 1
+    compressionThresholdBytes: 1024
+
+# `trustedHosts` is deliberately NOT patched. The public FQDN travels through
+# upstream's own repeatable `--trusted-host` flag (passed by the entrypoint from
+# $DSH_PUBLIC_HOST), which the web-app bundle already feeds into both the
+# `web-runtime` row and the `connection` row
+# (packages/bundle/web-app/cordis.patch.yml: `trustedHosts: !!js
+# ctx.webRuntime.trustedHosts`). On this version the web-runtime row adds every
+# non-internal IPv4 of the machine to that list when the bind is 0.0.0.0, so only
+# the external authority needs naming.
+#
+# The plugin makes the remote Settings UI writable and prints the public login
+# URL. Absolute path: the loader rewrites it to `file:///…` beside this patch,
+# so the image needs no package manager to compose it.
+- insert:
+    - id: pangolin-owns-host
+      name: /opt/deepseek-harness/fix/owns-host.mjs

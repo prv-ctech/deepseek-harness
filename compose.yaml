@@ -1,7 +1,9 @@
 # Reference deployment behind Pangolin (or any reverse proxy that reaches the
 # host by IP:port). `newt` publishes the site to
 # http://<host-ip>:3080, so the port must be reachable on a non-loopback
-# interface — a 127.0.0.1 publish is invisible to it.
+# interface — a 127.0.0.1 publish is invisible to it. Inside the container dsh
+# binds its own interface address (0.2.1 rejects the wildcard bind); the
+# published port forwards to it.
 services:
   deepseek-harness:
     # Override DSH_IMAGE to change variant or pin a version — e.g.
@@ -24,6 +26,12 @@ services:
       # Extra authorities accepted by the fence, comma-separated (e.g. the LAN
       # address you use to reach this box without going through the proxy).
       DSH_TRUSTED_HOSTS: ${DSH_TRUSTED_HOSTS:-}
+      # Address dsh binds *inside* the container, not the host side of the port
+      # above (that is DSH_BIND). Empty means "the container's own address",
+      # which is what a published port and a proxy on this Docker network can
+      # reach. 0.2.1 rejects a wildcard bind, so this has to be one concrete
+      # address: set it for host networking, several interfaces, or IPv6.
+      DSH_BIND_HOST: ${DSH_BIND_HOST:-}
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}
       # Sandbox stays on. Hosts where the kernel cannot enforce it are the

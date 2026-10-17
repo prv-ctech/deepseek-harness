@@ -3,11 +3,15 @@
 Container images for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`)
 that work behind an external reverse proxy.
 
-Upstream `dsh web` is loopback-only by design: the CLI refuses `--host 0.0.0.0`
-(`--host 0.0.0.0 is intentionally not supported yet for safety`), the printed URL
-is always `http://127.0.0.1:<port>`, and the remote Settings page turns read-only
-off loopback. That is correct for a desktop tool and useless for a container that
-a reverse proxy has to reach.
+Upstream `dsh web` is loopback-only by design: the listener never faces the
+network on its own. Through 0.2.0-rc.2 the schema knows only `127.0.0.1` and
+`0.0.0.0`, and the CLI refuses the wildcard; 0.2.1 removed the wildcard bind
+entirely, so the listener takes exactly one concrete interface address and
+rejects `0.0.0.0` on purpose — an all-interfaces listener would expose remote
+code execution on every interface the operator never meant to publish. The
+printed URL is always a local one, and the remote Settings page turns read-only
+off loopback. That is correct for a desktop tool and useless for a container
+that a reverse proxy has to reach.
 
 This repo ships the smallest complete change that fixes that, and nothing else.
 **Upstream is not forked and not patched** — every change goes through
@@ -16,7 +20,7 @@ merge.
 
 | Problem | Fix | Mechanism |
 | --- | --- | --- |
-| Refuses to bind anything but loopback | `proxy.patch.yml` sets the webserver row to `0.0.0.0` | upstream `--patch` layer (its documented opt-in) |
+| Refuses to face the network | the entrypoint binds the container's own interface address (`DSH_BIND_HOST` overrides) | upstream `--host` (0.2.1+); the `--patch` layer for 0.2.0-rc.2 |
 | `/api` rejects the public hostname (403) | `--trusted-host $DSH_PUBLIC_HOST` | upstream CLI flag |
 | Settings read-only behind a proxy | `fix/owns-host.mjs` exports `__DSH_TRANSPORT__ = { ownsHost: true }` | upstream `webserver/index-inject` event |
 | Operator cannot find the URL | the same plugin prints `https://…/?token=…` | public `connection.authenticatedUrl()` API |
@@ -67,9 +71,11 @@ to dsh as `--trusted-host`; anything the browser addresses that is missing from
 that list gets HTTP 403.
 
 Add extra authorities (a LAN address, an alternate hostname) with
-`DSH_TRUSTED_HOSTS="192.168.1.10:3080,dsh.lan"`. When the container binds
-`0.0.0.0`, upstream derives the host's LAN IP literals automatically, so only
-named authorities need listing.
+`DSH_TRUSTED_HOSTS="192.168.1.10:3080,dsh.lan"`. The address the listener bound is
+always accepted — with host networking that is the LAN address, so browsing by IP
+needs nothing named. Behind the published port of a bridge network the browser
+addresses the Docker host, not the container, so that authority belongs in
+`DSH_TRUSTED_HOSTS`.
 
 ### Security headers belong to the proxy
 
@@ -92,6 +98,7 @@ requests, so it is not optional.
 | `PUID` / `PGID` | `1000` / `1000` | Owner of the state volume and `/workspace` |
 | `DSH_HOME` | `/home/node/.dsh` | State directory (mount a volume here) |
 | `DSH_WORKSPACE_DIR` | `/workspace` | Directory chowned at start |
+| `DSH_BIND_HOST` | *(the container's own address)* | Address the listener binds inside the container — set it for host networking, several interfaces, or IPv6 |
 | `DSH_BIND` / `DSH_PORT` | `0.0.0.0` / `3080` | Host side of the published port |
 | `DSH_WORKSPACE` | `./workspace` | Host path mounted at `/workspace` |
 | `DSH_IMAGE` | `ghcr.io/prv-ctech/deepseek-harness:latest` | Image Compose runs; set the `-plus` tag for the toolchain variant |
@@ -328,10 +335,13 @@ unwritable, prints the exact host-side `chown` instead of a stack trace.
 paste, or drop it in `/boot/config/plugins/dockerMan/templates-user/`). It sets
 `PUID=99`/`PGID=100` to match Unraid's usual `nobody:users` share ownership, and
 leaves *Post Arguments* as a bare `web`. The entrypoint injects the patch layer
-itself, and caller-supplied flags win, so the mward4-style
-`web --patch … --no-open` still works if you paste it. Browsing by IP needs no
-configuration; a hostname goes in *DSH Public Host*. Run the GHCR login above in
-Unraid's terminal before installing or updating the container.
+and the bind address itself, and caller-supplied flags win — except `--host`,
+which the image owns because the healthcheck probes the same address (use
+`DSH_BIND_HOST`). The template uses bridge networking, so for the WebUI link add
+`192.168.1.10:3080`-style authorities to *Extra Trusted Hosts*; with host
+networking the bound LAN address is accepted as it is. A hostname goes in *DSH
+Public Host*. Run the GHCR login above in Unraid's terminal before installing or
+updating the container.
 
 **Choosing the numbers**: `PUID`/`PGID` may be any uid/gid, including ones with
 no passwd entry (Unraid's `99:100`). The entrypoint uses
@@ -344,15 +354,20 @@ are set — all three are.
 `docker logs deepseek-harness` prints:
 
 ```
+dsh-entrypoint: binding dsh web to 172.17.0.2
+dsh web: listening on 172.17.0.2 over plain HTTP; restrict this port to a trusted proxy or network
 dsh web (proxy): https://dsh.example.com/?token=…
-dsh web: http://127.0.0.1:3080/?token=… (LAN: http://172.17.0.2:3080/?token=…)
+dsh web: http://172.17.0.2:3080/?token=…
 ```
 
-Open the first line. The token is exchanged for an authority-bound session
-cookie (30 days, `HttpOnly; SameSite=Strict`) and is **rotated on every
-restart**, so a 401 after a restart means: re-read the log line. A 403 means the
-`Host`/`Origin` the browser sent is not in the trusted list — check
-`DSH_PUBLIC_HOST` and any proxy that rewrites `Host`.
+Open the `dsh web (proxy):` line — the address in the other two is the one inside
+the container, which the proxy reaches and a browser does not. The "listening on …
+restrict this port" note is expected: the image deliberately binds that interface
+because the wildcard bind is what upstream refuses. The token is exchanged for an
+authority-bound session cookie (30 days, `HttpOnly; SameSite=Strict`) and is
+**rotated on every restart**, so a 401 after a restart means: re-read the log
+line. A 403 means the `Host`/`Origin` the browser sent is not in the trusted
+list — check `DSH_PUBLIC_HOST` and any proxy that rewrites `Host`.
 
 ## What this image is not
 
@@ -374,9 +389,10 @@ image installs `@deepseek-ai/dsh@<version>`; a sweep skips the rest and picks
 them up on a later sweep.
 
 Each RC is built once per recipe, and nothing is rebuilt without a reason. The
-recipe hash (Dockerfile + entrypoint + patch + plugin) is stored in the image
-label `org.opencontainers.image.dsh-recipe`; a sweep builds a version only when
-its image is missing or carries a stale hash, so improving this repo reaches the
+recipe hash (Dockerfile + entrypoint + both patch layers + the listener helpers +
+the plugin) is stored in the image label
+`org.opencontainers.image.dsh-recipe`; a sweep builds a version only when its
+image is missing or carries a stale hash, so improving this repo reaches the
 versions in scope exactly once. The 6-hourly sweep is a scan — with nothing new
 it does not touch the registry. Nothing is published before its smoke test
 passes: the image is built, smoked in the runner, and only then pushed, so a
@@ -392,39 +408,49 @@ Images are `linux/amd64` and published as two packages —
 the `-plus` one adds `--build-arg INSTALL_PLUS=true`, and each package carries
 its own recipe label, so neither can mask a rebuild of the other.
 
-The Docker build can copy only `Dockerfile`, `docker-entrypoint.sh`,
-`proxy.patch.yml`, and `fix/owns-host.mjs` from its context. Local `.env` files,
-credentials, runtime state, and research notes are excluded by `.dockerignore`.
+The Docker build can copy only `Dockerfile`, `docker-entrypoint.sh`, the two
+patch layers, `bin/dsh-bind-host`, `bin/dsh-healthcheck` and
+`fix/owns-host.mjs` from its context. Local `.env` files, credentials, runtime
+state, and research notes are excluded by `.dockerignore`.
 
 ```sh
 # build locally (INSTALL_PLUS=true for -plus)
-docker build --build-arg DSH_VERSION=0.2.0-rc.2 -t dsh .
+docker build --build-arg DSH_VERSION=0.2.1-rc.2 -t dsh .
 
 # pin an exact release
 docker run -d -p 3080:3080 -v dsh-state:/home/node/.dsh \
-  ghcr.io/prv-ctech/deepseek-harness:0.2.0-rc.2
+  ghcr.io/prv-ctech/deepseek-harness:0.2.1-rc.2
 ```
 
 ## Layout
 
 ```
-Dockerfile              image build; the base package, and the -plus variant
-                        when built with INSTALL_PLUS=true
-docker-entrypoint.sh    ownership + PUID/PGID drop, apktool's framework link,
-                        then exec dsh
-proxy.patch.yml         the launch layer: 0.0.0.0 bind, plugin insert
-fix/owns-host.mjs       restores remote Settings, prints the public URL
-compose.yaml            reference deployment behind Pangolin
+Dockerfile                image build; the base package, and the -plus variant
+                          when built with INSTALL_PLUS=true
+docker-entrypoint.sh      listener address, ownership + PUID/PGID drop,
+                          apktool's framework link, then exec dsh
+proxy.patch.yml           the launch layer: plugin insert (0.2.1+)
+proxy-wildcard.patch.yml  the 0.0.0.0 bind for 0.2.0-rc.2 only
+bin/dsh-bind-host         resolves the address the listener binds
+bin/dsh-healthcheck       probes that same address
+fix/owns-host.mjs         restores remote Settings, prints the public URL
+compose.yaml              reference deployment behind Pangolin
 scripts/published-recipe.sh   recipe label lookup used by the workflow
 ```
 
 ## Upgrading upstream
 
 Nothing to merge. When a new RC is published the workflow builds, smoke-tests
-(version equality, PID-1/uid drop, the launch-token gate, and — for `-plus` —
+(version equality, the listener answering on the container's own address through
+the published port, PID-1/uid drop, the launch-token gate, and — for `-plus` —
 Python, every Android tool on `PATH`, a real jadx and apktool decode of a
 real APK, and a real codebase-memory-mcp index) and pushes it. The seams this
-repo uses are upstream's own, so they move with it. The one thing to re-check
-on a major release is the `webserver` row's config keys: a
-patch layer replaces that row's whole config, and a key upstream adds must be
-restated in `proxy.patch.yml` or the row fails schema validation at boot.
+repo uses are upstream's own, so they move with it. The listener contract is the
+one thing that has moved between releases: 0.2.0-rc.2 accepts
+`127.0.0.1 | 0.0.0.0` and needs the patch layer to reach the network, 0.2.1
+accepts one concrete interface address and rejects the wildcard. The entrypoint
+picks the mechanism from `$DSH_VERSION` — `--host` with `proxy.patch.yml` from
+0.2.1 on, `proxy-wildcard.patch.yml` before it — so a release that changes that
+contract again is where to look first. The wildcard layer, its Dockerfile COPY,
+its recipe-hash entry and the version gate all retire together when 0.2.0-rc.2
+leaves the workflow's `MIN_VERSION`.

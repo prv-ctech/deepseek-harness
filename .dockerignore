@@ -4,5 +4,9 @@
 !Dockerfile
 !docker-entrypoint.sh
 !proxy.patch.yml
+!proxy-wildcard.patch.yml
+!bin/
+!bin/dsh-bind-host
+!bin/dsh-healthcheck
 !fix/
 !fix/owns-host.mjs

@@ -1,0 +1,77 @@
+#!/usr/bin/env node
+/**
+ * Print the address `dsh web` should bind inside this container.
+ *
+ * `dsh` 0.2.1 removed the wildcard bind: the webserver schema takes exactly one
+ * concrete local interface address and rejects `0.0.0.0` outright, because an
+ * all-interfaces listener exposes remote code execution on interfaces the
+ * operator never meant to publish (0.2.0-rc.2 had the opposite schema and is
+ * handled by `proxy-wildcard.patch.yml`). A container has no stable address of
+ * its own, so it is resolved at start — and the HEALTHCHECK needs the same
+ * answer as the entrypoint, which is why this is one file both call.
+ *
+ * Resolution order:
+ *   1. `$DSH_BIND_HOST`, when set: the operator names the interface. Needed for
+ *      host networking, several interfaces, or an IPv6 literal.
+ *   2. The source address of the default route: the interface this container
+ *      would actually reach a proxy on.
+ *   3. The first non-internal IPv4 address, sorted by interface name: an
+ *      isolated network with no default route still has one.
+ *   4. `127.0.0.1`: nothing else to bind; the entrypoint says so out loud.
+ *
+ * IPv6 is not auto-detected: a container's link-local address needs a zone id
+ * and makes a poor default. Set `$DSH_BIND_HOST` for an IPv6 deployment.
+ */
+const dgram = require('node:dgram')
+const { networkInterfaces } = require('node:os')
+
+/** Addresses `dsh web` refuses; never fall back to one. */
+const WILDCARD = new Set(['0.0.0.0', '::', '[::]'])
+
+/** @returns the configured address, or '' when unset or unusable. */
+function configuredAddress () {
+  const value = (process.env.DSH_BIND_HOST || '').trim()
+  return value !== '' && !WILDCARD.has(value) ? value : ''
+}
+
+/** @returns the first non-internal IPv4 address, sorted by interface name. */
+function interfaceAddress () {
+  const found = []
+  for (const [name, addresses] of Object.entries(networkInterfaces())) {
+    for (const address of addresses || []) {
+      if (address.family === 'IPv4' && !address.internal) found.push([name, address.address])
+    }
+  }
+  found.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+  return found.length > 0 ? found[0][1] : ''
+}
+
+/**
+ * The local address the kernel would source the default route from. A UDP
+ * connect performs the route lookup and sends nothing, so this works offline.
+ * @returns a promise of the address, or '' when there is no such route.
+ */
+function routeAddress () {
+  return new Promise((resolve) => {
+    const socket = dgram.createSocket('udp4')
+    let done = false
+    const finish = (value) => {
+      if (done) return
+      done = true
+      try { socket.close() } catch {}
+      resolve(value)
+    }
+    // A route lookup that never answers must not wedge the healthcheck.
+    setTimeout(() => finish(''), 1000).unref()
+    socket.on('error', () => finish(''))
+    socket.connect(53, '1.1.1.1', () => {
+      let address = ''
+      try { address = socket.address().address } catch {}
+      finish(address !== '' && !WILDCARD.has(address) ? address : '')
+    })
+  })
+}
+
+routeAddress()
+  .then((address) => configuredAddress() || address || interfaceAddress() || '127.0.0.1')
+  .then((address) => { process.stdout.write(`${address}\n`) })

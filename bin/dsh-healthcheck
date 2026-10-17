@@ -1,0 +1,19 @@
+#!/bin/sh
+# Container health probe.
+#
+# The bind address is part of the health contract: `dsh` 0.2.1 rejects the
+# wildcard bind, so the entrypoint binds the container's own interface address
+# and nothing listens on 127.0.0.1. Probing loopback would therefore report the
+# container unhealthy forever — or, worse, healthy while the port a proxy dials
+# answers nothing. Probe the address dsh was told to bind.
+#
+# 401 is the launch-token gate and 303 a token exchange; both mean the server is
+# up and answering.
+set -eu
+
+host=$(/usr/local/bin/dsh-bind-host)
+case "$host" in
+  *:*) host="[$host]" ;;
+esac
+
+exec node -e "fetch('http://$host:3080/').then(r => process.exit([200, 303, 401].includes(r.status) ? 0 : 1)).catch(() => process.exit(1))"
