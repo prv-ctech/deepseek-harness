@@ -13,10 +13,9 @@ PGID="${PGID:-1000}"
 STATE="${DSH_HOME:-/home/node/.dsh}"
 HOME_DIR=/home/node
 WORKSPACE="${DSH_WORKSPACE_DIR:-/workspace}"
-# 0.2.1+ binds one concrete interface address; 0.2.0-rc.2 can only bind
-# 127.0.0.1 | 0.0.0.0, and a patch layer is the only way to say 0.0.0.0.
 PATCH=/opt/deepseek-harness/proxy.patch.yml
-PATCH_WILDCARD=/opt/deepseek-harness/proxy-wildcard.patch.yml
+# The authority browsers use. It becomes both `--trusted-host` (the /api fence)
+# and `--public-url https://<it>/` (the printed login URL and DSH_WEB_URL).
 PUBLIC_HOST="${DSH_PUBLIC_HOST:-}"
 # Space- or comma-separated extra authorities the /api fence accepts, e.g. a
 # LAN address used to reach this container without going through the proxy.
@@ -40,8 +39,8 @@ needs_chown() {
 # It is linked here rather than in the image because the state volume is mounted
 # over that path: a link baked into a layer would be invisible at runtime, and
 # would silently differ between a fresh named volume and an upgraded one.
-# Guarded on the framework's presence, so it is a no-op on the base and -chrome
-# images, which ship no apktool at all.
+# Guarded on the framework's presence, so it is a no-op on the base image,
+# which ships no apktool at all.
 android_framework() {
   frame=/usr/share/android-framework-res/framework-res.apk
   dir="${XDG_DATA_HOME:-}/apktool/framework"
@@ -55,35 +54,21 @@ android_framework() {
   fi
 }
 
-# Which listener contract this `dsh` speaks, decided once here because the image
-# ships more than one tracked release. 0.2.1 replaced the wildcard bind with one
-# concrete interface address and rejects `0.0.0.0` outright, so from then on the
-# address is an argument and the patch layer carries no `webserver` row. A
-# 0.2.0-rc.2 schema accepts 127.0.0.1 | 0.0.0.0 only, so that line keeps the
-# patch layer. $DSH_VERSION is baked into the image; the fallback covers a build
-# that renamed it, and an unreadable version takes the wildcard branch, which is
-# what every version before 0.2.1 needs anyway.
-version="${DSH_VERSION:-}"
-[ -n "$version" ] || version=$(dsh --version 2>/dev/null || true)
-at_least() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]; }
-concrete_bind=0
-if [ -n "$version" ] && at_least "$version" 0.2.1; then
-  concrete_bind=1
-fi
-
 # Build the arguments for a default `dsh web` launch, then append the caller's.
 # Order matters twice over:
 #   * Unraid replaces CMD, so a bare flag list must still land after `web`.
 #   * `--patch` and `--no-open` are parsed by different parsers. `--patch`
 #     belongs to the launcher and must precede the first app-owned flag, while
-#     `--no-open`, `--host` and `--trusted-host` belong to the app and must
-#     follow it. Supplying a flag the caller already passed would put a launcher
-#     flag after an app flag, and dsh then rejects it with `unknown option
-#     '--patch'` — so the caller's own flags win and ours are only injected when
-#     absent.
+#     `--no-open`, `--host`, `--trusted-host` and `--public-url` belong to the
+#     app and must follow it. Supplying a flag the caller already passed would
+#     put a launcher flag after an app flag, and dsh then rejects it with
+#     `unknown option '--patch'` — so the caller's own flags win and ours are
+#     only injected when absent.
 #
-# `--host` is the one flag the image owns rather than yields: the HEALTHCHECK
-# probes the same address (bin/dsh-healthcheck, bin/dsh-bind-host), so a second
+# `--host` is the one flag the image owns rather than yields: dsh rejects a
+# wildcard bind (all-interfaces would expose remote code execution on every
+# interface), so the container's own address is bound, and the HEALTHCHECK
+# probes that same address (bin/dsh-healthcheck, bin/dsh-bind-host). A second
 # opinion in CMD would leave the container healthy while the port a proxy dials
 # answers nothing. DSH_BIND_HOST is the override. The flag is appended last
 # because the app parser takes the last occurrence.
@@ -99,41 +84,49 @@ if [ "$1" = "web" ]; then
   patch_seen=0
   no_open_seen=0
   host_seen=0
+  port=""
+  public_url_seen=0
+  previous=""
   for argument in "$@"; do
+    [ "$previous" = "--port" ] && port=$argument
     case "$argument" in
       --patch) patch_seen=1 ;;
       --no-open) no_open_seen=1 ;;
       --host|--host=*) host_seen=1 ;;
+      --port=*) port=${argument#--port=} ;;
+      --public-url|--public-url=*) public_url_seen=1 ;;
     esac
+    previous=$argument
   done
 
   if [ "$patch_seen" = 1 ]; then
     set -- web "$@"
-  elif [ "$concrete_bind" = 1 ]; then
-    set -- web --patch "$PATCH" "$@"
   else
-    set -- web --patch "$PATCH_WILDCARD" "$@"
+    set -- web --patch "$PATCH" "$@"
   fi
   [ "$no_open_seen" = 1 ] || set -- "$@" --no-open
-  if [ "$concrete_bind" = 1 ]; then
-    bind_host=$(/usr/local/bin/dsh-bind-host)
-    log "binding dsh web to $bind_host"
-    if [ -z "${DSH_BIND_HOST:-}" ]; then
-      case "$bind_host" in
-        127.*|::1)
-          log "warning: no non-loopback address to bind, so the GUI answers only inside this container; set DSH_BIND_HOST to the address a proxy can reach"
-          ;;
-      esac
-    fi
-    if [ "$host_seen" = 1 ]; then
-      log "warning: --host is not used on this image; the entrypoint owns the bind address (set DSH_BIND_HOST instead)"
-    fi
-    set -- "$@" --host "$bind_host"
-  elif [ "$host_seen" = 1 ]; then
-    log "warning: --host has no effect on $version; the wildcard patch layer owns the listener"
+  bind_host=$(/usr/local/bin/dsh-bind-host)
+  log "binding dsh web to $bind_host"
+  if [ -z "${DSH_BIND_HOST:-}" ]; then
+    case "$bind_host" in
+      127.*|::1)
+        log "warning: no non-loopback address to bind, so the GUI answers only inside this container; set DSH_BIND_HOST to the address a proxy can reach"
+        ;;
+    esac
   fi
+  if [ "$host_seen" = 1 ]; then
+    log "warning: --host is not used on this image; the entrypoint owns the bind address (set DSH_BIND_HOST instead)"
+  fi
+  if [ -n "$port" ] && [ "$port" != 3080 ]; then
+    log "warning: the HEALTHCHECK probes port 3080, so --port $port reports this container unhealthy; change the published host port instead"
+  fi
+  set -- "$@" --host "$bind_host"
   if [ -n "$PUBLIC_HOST" ]; then
     set -- "$@" --trusted-host "$PUBLIC_HOST"
+    # Upstream prints and opens the advertised root with its launch token, and
+    # hands the agent the same root (clean) as DSH_WEB_URL. https because the
+    # authority is the one behind the TLS-terminating proxy.
+    [ "$public_url_seen" = 1 ] || set -- "$@" --public-url "https://$PUBLIC_HOST/"
   fi
   for authority in $(printf '%s' "$EXTRA_TRUSTED" | tr ',' ' '); do
     [ -n "$authority" ] && set -- "$@" --trusted-host "$authority"

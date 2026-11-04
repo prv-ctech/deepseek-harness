@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+#
 # DeepSeek Harness in a container, reachable through an external reverse proxy.
 #
 # Upstream `dsh web` is deliberately loopback-only: the printed URL is
@@ -7,25 +9,23 @@
 # composition:
 #
 #   * the entrypoint binds the container's own interface address with upstream's
-#     `--host` flag. 0.2.1 removed the wildcard bind (`0.0.0.0` is rejected on
-#     purpose: an all-interfaces listener exposes remote code execution on
-#     interfaces the operator never meant to publish), so the address is
-#     resolved at start by `bin/dsh-bind-host`, with `DSH_BIND_HOST` as the
-#     override. `proxy-wildcard.patch.yml` does the same job for 0.2.0-rc.2,
-#     whose schema knows 127.0.0.1 | 0.0.0.0 only.
-#   * `fix/owns-host.mjs` restores the Settings UI and prints the public URL.
+#     `--host` flag. The wildcard bind is rejected on purpose (an all-interfaces
+#     listener exposes remote code execution on interfaces the operator never
+#     meant to publish), so the address is resolved at start by
+#     `bin/dsh-bind-host`, with `DSH_BIND_HOST` as the override.
+#   * `$DSH_PUBLIC_HOST` becomes upstream's `--trusted-host` and `--public-url`,
+#     so the /api fence accepts it and the printed login URL is the public one.
+#   * `fix/owns-host.mjs` keeps the Settings UI writable off loopback.
 #
 # Nothing is forked and nothing is monkey-patched, so a new upstream RC is a
 # rebuild, not a merge.
-#
-# syntax=docker/dockerfile:1
 
 ARG BASE_IMAGE=node:22-bookworm-slim
 FROM ${BASE_IMAGE}
 
 # Release to ship. The tracking workflow overrides this with --build-arg; keep
 # the default at the newest RC this repo publishes.
-ARG DSH_VERSION=0.2.1-rc.2
+ARG DSH_VERSION=0.2.2-rc.1
 # `dsh plugin add` and the Plugins settings page shell out to pnpm (resolved
 # through PATH). Without it that page is dead; with it, plugin installs land in
 # the state volume.
@@ -226,15 +226,13 @@ ENV XDG_CACHE_HOME=/home/node/.dsh/cache \
     NARB_NATIVE_CACHE_DIR=/home/node/.dsh/cache/native \
     CBM_CACHE_DIR=/home/node/.dsh/cache/codebase-memory-mcp
 
-# The launcher layer and the plugin it inserts, plus the wildcard layer that only
-# 0.2.0-rc.2 uses (the entrypoint selects by version). The patch names the plugin
-# by absolute path, so no package manager and no profile install are involved.
+# The launcher layer and the plugin it inserts. The patch names the plugin by
+# absolute path, so no package manager and no profile install are involved.
 COPY proxy.patch.yml /opt/deepseek-harness/proxy.patch.yml
-COPY proxy-wildcard.patch.yml /opt/deepseek-harness/proxy-wildcard.patch.yml
 COPY fix/owns-host.mjs /opt/deepseek-harness/fix/owns-host.mjs
 
 # The listener address is resolved at runtime, and the same file answers for the
-# entrypoint and the HEALTHCHECK (which runs in a fresh process): 0.2.1 rejects
+# entrypoint and the HEALTHCHECK (which runs in a fresh process): dsh rejects
 # the wildcard bind, so the container's own address is the only one both a proxy
 # and a probe can use.
 COPY bin/dsh-bind-host /usr/local/bin/dsh-bind-host
@@ -243,8 +241,7 @@ COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 # COPY preserves the source mode, and a restrictive umask produces 0600 files
 # that the runtime user (a bare PUID) then cannot read.
-RUN chmod 0644 /opt/deepseek-harness/proxy.patch.yml \
-      /opt/deepseek-harness/proxy-wildcard.patch.yml /opt/deepseek-harness/fix/owns-host.mjs \
+RUN chmod 0644 /opt/deepseek-harness/proxy.patch.yml /opt/deepseek-harness/fix/owns-host.mjs \
  && chmod 0755 /usr/local/bin/docker-entrypoint.sh \
       /usr/local/bin/dsh-bind-host /usr/local/bin/dsh-healthcheck
 
@@ -263,7 +260,7 @@ EXPOSE 3080
 # volumes, then drops to PUID:PGID before dsh is executed. Running with
 # `--user` is supported too (the entrypoint then skips the ownership step).
 #
-# Probe the address dsh was told to bind: 0.2.1 rejects the wildcard bind, so
+# Probe the address dsh was told to bind: dsh rejects the wildcard bind, so
 # nothing listens on 127.0.0.1 and a loopback probe would be a liveness check of
 # the wrong socket. The web UI answers 401 without a launch token and 303 on
 # exchange, so both mean "server is up". No curl/wget in this base image; node is

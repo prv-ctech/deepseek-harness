@@ -2,11 +2,10 @@
 /**
  * Print the address `dsh web` should bind inside this container.
  *
- * `dsh` 0.2.1 removed the wildcard bind: the webserver schema takes exactly one
+ * `dsh` (0.2.1 on) has no wildcard bind: the webserver schema takes exactly one
  * concrete local interface address and rejects `0.0.0.0` outright, because an
  * all-interfaces listener exposes remote code execution on interfaces the
- * operator never meant to publish (0.2.0-rc.2 had the opposite schema and is
- * handled by `proxy-wildcard.patch.yml`). A container has no stable address of
+ * operator never meant to publish. A container has no stable address of
  * its own, so it is resolved at start — and the HEALTHCHECK needs the same
  * answer as the entrypoint, which is why this is one file both call.
  *
@@ -72,6 +71,7 @@ function routeAddress () {
   })
 }
 
-routeAddress()
-  .then((address) => configuredAddress() || address || interfaceAddress() || '127.0.0.1')
+// The configured address wins outright, so it skips the route lookup.
+Promise.resolve(configuredAddress() || routeAddress())
+  .then((address) => address || interfaceAddress() || '127.0.0.1')
   .then((address) => { process.stdout.write(`${address}\n`) })

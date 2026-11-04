@@ -2,7 +2,7 @@ name: build
 
 # Tracks upstream release candidates, read from the releases of
 # github.com/deepseek-ai/deepseek-harness (tags `dsh-v<version>`). RCs only,
-# and only from 0.2.0-rc.2 on: older lines are out of scope and are neither
+# and only from MIN_VERSION on: older lines are out of scope and are neither
 # built nor retagged. A release is buildable only once the npm package exists,
 # because the image installs `@deepseek-ai/dsh@<version>` — a GitHub release
 # without a matching npm publish would fail the build, so the sweep skips it
@@ -27,7 +27,6 @@ on:
       - Dockerfile
       - docker-entrypoint.sh
       - proxy.patch.yml
-      - proxy-wildcard.patch.yml
       - bin/**
       - fix/**
       - scripts/**
@@ -50,12 +49,14 @@ permissions:
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}
-  # The same image plus a real browser and the toolchain a plugin, a task or
-  # the MCP configuration can discover instead of downloading at runtime.
+  # The same image plus the toolchain a plugin, a task or the MCP
+  # configuration can discover instead of downloading at runtime.
   IMAGE_PLUS: ghcr.io/${{ github.repository }}-plus
   REGISTRY: ghcr.io
-  # Lowest release this repo publishes; anything older is out of scope.
-  MIN_VERSION: '0.2.0-rc.2'
+  # Lowest release this repo publishes; anything older is out of scope. 0.2.1
+  # is where the listener took one concrete address (`--host`) and gained
+  # `--public-url`, the two contracts the entrypoint relies on.
+  MIN_VERSION: '0.2.1-rc.1'
   BASE_IMAGE: node:22-bookworm-slim
 
 jobs:
@@ -74,7 +75,7 @@ jobs:
       - name: Compute recipe hash
         id: recipe
         run: |
-          files='Dockerfile docker-entrypoint.sh proxy.patch.yml proxy-wildcard.patch.yml bin/dsh-bind-host bin/dsh-healthcheck fix/owns-host.mjs'
+          files='Dockerfile docker-entrypoint.sh proxy.patch.yml bin/dsh-bind-host bin/dsh-healthcheck fix/owns-host.mjs'
           # shellcheck disable=SC2086
           echo "base=$(cat $files | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
           echo "plus=$( { cat $files; echo plus; } | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
@@ -267,12 +268,18 @@ jobs:
           }
 
           docker run -d --name "$name" -p 127.0.0.1:3080:3080 \
+            -e DSH_PUBLIC_HOST=smoke.example \
             -v "${name}-state:/home/node/.dsh" "$IMAGE_TAG"
           wait_healthy "$name"
 
           test "$(docker exec "$name" dsh --version)" = "$VERSION"
 
-          # 0.2.1 rejects the wildcard bind, so the listener sits on the
+          # DSH_PUBLIC_HOST reaches upstream as --public-url, which is what
+          # prints the login URL an operator can actually open.
+          docker logs "$name" 2>&1 | grep -q '^dsh web: https://smoke\.example/?token=' \
+            || { echo "::error::no public login URL in the log"; docker logs --tail 50 "$name"; exit 1; }
+
+          # dsh rejects the wildcard bind, so the listener sits on the
           # container's own interface address. A silent loopback fallback would
           # keep the healthcheck green (it probes the same address) while nothing
           # a proxy dials answers — the assertion is what rules that out.
@@ -297,9 +304,7 @@ jobs:
 
           # 401 = launch-token gate; 303 = token exchange. Probed through the
           # published port on the runner, which is the path a deployment actually
-          # uses. The old probe shared the container's network namespace and hit
-          # its loopback, so it bypassed the port publish and only worked while
-          # the listener was the 0.2.0-rc.2 wildcard.
+          # uses, not the container's own loopback, where nothing listens.
           code=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:3080/)
           echo "index status: $code"
           printf '%s' "$code" | grep -qE '^(200|303|401)$'

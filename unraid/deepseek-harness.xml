@@ -17,7 +17,7 @@ After registry login, the container needs no appdata setup. It takes ownership o
 
 GETTING THE LOGIN URL: dsh requires a launch token and prints the URL to open in its log:
 [br]  docker logs deepseek-harness[br]
-Look for the line starting "dsh web (proxy):" or "dsh web:". Open that URL once; it exchanges the token for a cookie valid for 30 days. THE TOKEN ROTATES ON EVERY RESTART, so after a container update or restart, re-read the log. Seeing "authentication required" or HTTP 401 means exactly that - it is not a misconfiguration.
+Look for the line starting "dsh web: http". With DSH PUBLIC HOST set it is your public https address. Open that URL once; it exchanges the token for a cookie valid for 30 days. THE TOKEN ROTATES ON EVERY RESTART, so after a container update or restart, re-read the log. Seeing "authentication required" or HTTP 401 means exactly that - it is not a misconfiguration.
 
 BROWSING BY IP OR BY NAME: dsh accepts a request only if the hostname in the address bar is trusted - otherwise the API answers HTTP 403. The address the listener binds inside the container is trusted automatically: with HOST networking that is your LAN address, so http://[IP]:[PORT:3080] needs no configuration. This template uses BRIDGE networking, where the bound address is the container's internal one, so add the address you actually type (e.g. 192.168.1.10:3080) to EXTRA TRUSTED HOSTS. A HOSTNAME (e.g. unraid.local or a domain behind a reverse proxy) must be declared either way: put it in DSH PUBLIC HOST below, or add it to EXTRA TRUSTED HOSTS to keep several working at once. This is upstream's DNS-rebinding and CSRF protection, and it is what stops a malicious page on your LAN from reaching the API.
 
@@ -27,7 +27,7 @@ SANDBOX: dsh runs untrusted commands confined to the Workspace path. The confine
 
 WHAT THE AGENT CAN REACH: the Workspace mount, and anything else you mount into it. Only mount data you are willing to let an AI read and modify.
 
-VERSIONS: :latest follows the newest upstream release candidate (tracked from 0.2.0-rc.2 on). Every version we ship also gets its own tag (e.g. 0.2.0-rc.2) which you can pin in Repository instead. dsh is a developer preview with breaking changes between releases - 0.1.7 migrated session logs to a format that cannot be downgraded - so consider LEAVING AUTO-UPDATE OFF, backing up appdata first, and reading the release notes before updating.
+VERSIONS: :latest follows the newest upstream release candidate (tracked from 0.2.1-rc.1 on). Every version we ship also gets its own tag (e.g. 0.2.2-rc.1) which you can pin in Repository instead. dsh is a developer preview with breaking changes between releases - 0.1.7 migrated session logs to a format that cannot be downgraded - so consider LEAVING AUTO-UPDATE OFF, backing up appdata first, and reading the release notes before updating.
 
 IMAGE VARIANTS: the Repository above pulls the plain image. To change variant, edit Repository and Update. "-plus" adds python3/pip, the codebase-memory-mcp binary behind the code intelligence MCP server, and an Android reverse-engineering toolchain (jadx, apktool, smali/baksmali, aapt, dexdump, apksigner, zipalign, androguard) - roughly 600-700 MB more, most of it one Java runtime shared by those tools and the MCP server binary. Neither variant ships a browser: a plugin that drives one has to bring its own browser, runtime libraries and fonts. Both variants behave identically otherwise. Nothing here needs configuration.
 
